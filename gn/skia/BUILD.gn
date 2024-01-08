@@ -178,9 +178,7 @@ config("default") {
     } else if (target_cpu == "arm64") {
       _arch_flags = [
         "-arch",
-        "arm64",
-        "-arch",
-        "arm64e",
+        "arm64"
       ]
     } else if (target_cpu == "x86") {
       _arch_flags = [
@@ -258,15 +256,15 @@ config("default") {
     if (current_cpu == "arm64") {
       asmflags += [
         "-target",
-        "arm64-apple-macos11",
+        "arm64-apple-macos",
       ]
       cflags += [
         "-target",
-        "arm64-apple-macos11",
+        "arm64-apple-macos",
       ]
       ldflags += [
         "-target",
-        "arm64-apple-macos11",
+        "arm64-apple-macos",
       ]
     }
   }
