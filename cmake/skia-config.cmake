@@ -13,8 +13,6 @@
 #
 #************************************************************************************************
 
-include_guard (GLOBAL)
-
 ccl_find_path (skia_SOURCE_DIR NAMES "BUILD.gn" HINTS "${CMAKE_CURRENT_LIST_DIR}/.." DOC "Skia directory")
 ccl_find_program (NINJA NAMES "ninja" HINTS "${CCL_TOOLS_BINDIR}/${VENDOR_HOST_PLATFORM}/depot_tools" PATH_SUFFIXES "${CMAKE_HOST_SYSTEM_PROCESSOR}" DOC "Ninja executable")
 
@@ -180,73 +178,78 @@ elseif(APPLE)
 	
 endif ()
 
-file (WRITE ${CMAKE_CURRENT_BINARY_DIR}/tmp/build_skia.sh "${filecontent}")
+if (NOT TARGET build_skia)
+	file (WRITE ${CMAKE_CURRENT_BINARY_DIR}/tmp/build_skia.sh "${filecontent}")
 
-file (COPY ${CMAKE_CURRENT_BINARY_DIR}/tmp/build_skia.sh
-	DESTINATION ${CMAKE_CURRENT_BINARY_DIR}
-	FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
-)
-
-add_custom_command (OUTPUT ${skia_outputs}
-	COMMAND ${CMAKE_CURRENT_BINARY_DIR}/build_skia.sh
-	WORKING_DIRECTORY "${skia_SOURCE_DIR}"
-	BYPRODUCTS ${skia_byproducts}
-	VERBATIM USES_TERMINAL
-	DEPENDS ${SKIA_GN}
-)
-add_custom_target (build_skia
-	DEPENDS ${skia_outputs}
-)
-if (${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.20")
-	target_sources (build_skia PRIVATE ${CMAKE_CURRENT_LIST_FILE})
-endif ()
-set_target_properties (build_skia PROPERTIES 
-	USE_FOLDERS ON
-	FOLDER libs
-)
-if(APPLE)
-	set_target_properties (build_skia PROPERTIES 
-		XCODE_ATTRIBUTE_ARCHS "$(ARCHS_STANDARD)"
-		XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH "${CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH}"
-	)
-endif ()
-
-foreach (flavor ${skia_flavors})
-	add_library (skia_${flavor} SHARED IMPORTED GLOBAL)
-	add_dependencies (skia_${flavor} build_skia)
-	set_target_properties (skia_${flavor} PROPERTIES
-		IMPORTED_LOCATION "${skia_output_${flavor}}"
-		INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
+	file (COPY ${CMAKE_CURRENT_BINARY_DIR}/tmp/build_skia.sh
+		DESTINATION ${CMAKE_CURRENT_BINARY_DIR}
+		FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 	)
 
-	add_library (skshaper_${flavor} SHARED IMPORTED GLOBAL)
-	add_dependencies (skshaper_${flavor} build_skia)
-	set_target_properties (skshaper_${flavor} PROPERTIES
-		IMPORTED_LOCATION "${skshaper_output_${flavor}}"
-		INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
+	add_custom_command (OUTPUT ${skia_outputs}
+		COMMAND ${CMAKE_CURRENT_BINARY_DIR}/build_skia.sh
+		WORKING_DIRECTORY "${skia_SOURCE_DIR}"
+		BYPRODUCTS ${skia_byproducts}
+		VERBATIM USES_TERMINAL
+		DEPENDS ${SKIA_GN}
 	)
-	
-	add_library (skunicode_${flavor} SHARED IMPORTED GLOBAL)
-	add_dependencies (skunicode_${flavor} build_skia)
-	set_target_properties (skunicode_${flavor} PROPERTIES
-		IMPORTED_LOCATION "${skunicode_output_${flavor}}"
-		INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
+	add_custom_target (build_skia
+		DEPENDS ${skia_outputs}
 	)
-	
-	add_library (skparagraph_${flavor} SHARED IMPORTED GLOBAL)
-	add_dependencies (skparagraph_${flavor} build_skia)
-	set_target_properties (skparagraph_${flavor} PROPERTIES
-		IMPORTED_LOCATION "${skparagraph_output_${flavor}}"
-		INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
-	)
-	
-	if (SKIA_DEBUG)
-		target_compile_definitions (skia_${flavor} INTERFACE SK_DEBUG=1)
-	else ()
-		target_compile_definitions (skia_${flavor} INTERFACE SK_RELEASE=1)
+	if (${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.20")
+		target_sources (build_skia PRIVATE ${CMAKE_CURRENT_LIST_FILE})
 	endif ()
-	
-	list (APPEND SKIA_LIBRARIES skia_${flavor} skshaper_${flavor} skunicode_${flavor} skparagraph_${flavor})
-endforeach ()
+	set_target_properties (build_skia PROPERTIES 
+		USE_FOLDERS ON
+		FOLDER libs
+	)
+	if(APPLE)
+		set_target_properties (build_skia PROPERTIES 
+			XCODE_ATTRIBUTE_ARCHS "$(ARCHS_STANDARD)"
+			XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH "${CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH}"
+		)
+	endif ()
 
+	foreach (flavor ${skia_flavors})
+		add_library (skia_${flavor} SHARED IMPORTED GLOBAL)
+		add_dependencies (skia_${flavor} build_skia)
+		set_target_properties (skia_${flavor} PROPERTIES
+			IMPORTED_LOCATION "${skia_output_${flavor}}"
+			INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
+		)
 
+		add_library (skshaper_${flavor} SHARED IMPORTED GLOBAL)
+		add_dependencies (skshaper_${flavor} build_skia)
+		set_target_properties (skshaper_${flavor} PROPERTIES
+			IMPORTED_LOCATION "${skshaper_output_${flavor}}"
+			INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
+		)
+
+		add_library (skunicode_${flavor} SHARED IMPORTED GLOBAL)
+		add_dependencies (skunicode_${flavor} build_skia)
+		set_target_properties (skunicode_${flavor} PROPERTIES
+			IMPORTED_LOCATION "${skunicode_output_${flavor}}"
+			INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
+		)
+
+		add_library (skparagraph_${flavor} SHARED IMPORTED GLOBAL)
+		add_dependencies (skparagraph_${flavor} build_skia)
+		set_target_properties (skparagraph_${flavor} PROPERTIES
+			IMPORTED_LOCATION "${skparagraph_output_${flavor}}"
+			INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
+		)
+
+		if (SKIA_DEBUG)
+			target_compile_definitions (skia_${flavor} INTERFACE SK_DEBUG=1)
+		else ()
+			target_compile_definitions (skia_${flavor} INTERFACE SK_RELEASE=1)
+		endif ()
+
+		list (APPEND SKIA_LIBRARIES skia_${flavor} skshaper_${flavor} skunicode_${flavor} skparagraph_${flavor})
+	endforeach ()
+
+else ()
+	foreach (flavor ${skia_flavors})
+		list (APPEND SKIA_LIBRARIES skia_${flavor} skshaper_${flavor} skunicode_${flavor} skparagraph_${flavor})
+	endforeach ()
+endif ()
