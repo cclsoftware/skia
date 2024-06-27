@@ -8,11 +8,14 @@ import("../third_party.gni")
 
 declare_args() {
   skia_use_system_harfbuzz = is_official_build && !is_wasm
+  skia_use_system_harfbuzz_includes = true
 }
 
 if (skia_use_system_harfbuzz) {
   system("harfbuzz") {
-    include_dirs = [ "/usr/include/harfbuzz" ]
+    if (skia_use_system_harfbuzz_includes) {
+      include_dirs = [ "/usr/include/harfbuzz" ]
+    }
     libs = [ "harfbuzz" ]
     if (skia_pdf_subset_harfbuzz) {
       libs += [ "harfbuzz-subset" ]

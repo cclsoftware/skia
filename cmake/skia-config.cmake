@@ -86,8 +86,9 @@ if(UNIX AND NOT APPLE)
 		set (SKIA_SYSTEM_HARFBUZZ "skia_use_system_harfbuzz=false")
 	endif ()
 	if (CMAKE_C_COMPILER_TARGET)
-		set (SKIA_COMPILER_TARGET ", \\\"--target=${CMAKE_C_COMPILER_TARGET}\\\", \\\"--sysroot=${CMAKE_SYSROOT}\\\", \\\"-I${CMAKE_SYSROOT}/usr/include\\\", \\\"-I${CMAKE_SYSROOT}/usr/include/freetype2\\\", \\\"-I${CMAKE_SYSROOT}/usr/aarch64-linux-gnu/include\\\"")
+		set (SKIA_COMPILER_TARGET ", \\\"--target=${CMAKE_C_COMPILER_TARGET}\\\", \\\"--sysroot=${CMAKE_SYSROOT}\\\", \\\"-I${CMAKE_SYSROOT}/usr/include\\\", \\\"-I${CMAKE_SYSROOT}/usr/include/freetype2\\\", \\\"-I${CMAKE_SYSROOT}/usr/include/harfbuzz\\\", \\\"-I${CMAKE_SYSROOT}/usr/aarch64-linux-gnu/include\\\"")
 		set (SKIA_SYSTEM_FREETYPE_INCLUDES "skia_use_system_freetype_includes=false")
+		set (SKIA_SYSTEM_HARFBUZZ_INCLUDES "skia_use_system_harfbuzz_includes=false")
 	endif ()
 
 	set (SKIA_GRAPHICS_IMPLEMENTATION "")
@@ -103,7 +104,7 @@ if(UNIX AND NOT APPLE)
 	endif ()
 	
 	set (SKIA_ARGS_${VENDOR_TARGET_ARCHITECTURE}
-		"target_cpu=\\\"${VENDOR_TARGET_ARCHITECTURE}\\\" extra_cflags=[${SKIA_WARNING_FLAGS} ${SKIA_COMPILER_TARGET}] extra_cflags_cc=[${SKIA_WARNING_FLAGS}] ${SKIA_SYSTEM_HARFBUZZ} ${SKIA_SYSTEM_FREETYPE_INCLUDES} ${SKIA_GRAPHICS_IMPLEMENTATION} skia_use_system_freetype2=true skia_use_system_libjpeg_turbo=true skia_use_system_libpng=true skia_use_system_icu=true"
+		"target_cpu=\\\"${VENDOR_TARGET_ARCHITECTURE}\\\" extra_cflags=[${SKIA_WARNING_FLAGS} ${SKIA_COMPILER_TARGET}] extra_cflags_cc=[${SKIA_WARNING_FLAGS}] ${SKIA_SYSTEM_HARFBUZZ} ${SKIA_SYSTEM_FREETYPE_INCLUDES} ${SKIA_SYSTEM_HARFBUZZ_INCLUDES} ${SKIA_GRAPHICS_IMPLEMENTATION} skia_use_system_freetype2=true skia_use_system_libjpeg_turbo=true skia_use_system_libpng=true skia_use_system_icu=true"
 	)
 	
 	foreach (flavor ${skia_flavors})
