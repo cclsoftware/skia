@@ -13,6 +13,9 @@
 #
 #************************************************************************************************
 
+# increment when updating skia sources
+set (SKIA_REVISION 1)
+
 ccl_find_path (skia_SOURCE_DIR NAMES "BUILD.gn" HINTS "${CMAKE_CURRENT_LIST_DIR}/.." DOC "Skia directory")
 ccl_find_program (NINJA NAMES "ninja" HINTS "${CCL_TOOLS_BINDIR}/${VENDOR_HOST_PLATFORM}/depot_tools" PATH_SUFFIXES "${CMAKE_HOST_SYSTEM_PROCESSOR}" DOC "Ninja executable")
 
@@ -57,17 +60,64 @@ endif ()
 option (SKIA_USE_SYSTEM_HARFBUZZ "Link Skia against system harfbuzz library" ON)
 string (MD5 options_hash "${skia_FIND_COMPONENTS} ${SKIA_USE_SYSTEM_HARFBUZZ}")
 
-foreach (flavor ${skia_flavors})
-	set (out_dir "out/cmake_${flavor}_${buildtype}_${options_hash}")
-	set (skia_outdir_${flavor} "${out_dir}")
-	set (skia_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/libskia.a")
-	set (skshaper_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/libskshaper.a")
-	set (skunicode_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/libskunicode.a")
-	set (skparagraph_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/libskparagraph.a")
+set (skia_buildscript_name "build.ninja")
+set (skia_file_name "libskia.a")
+set (skshaper_file_name "libskshaper.a")
+set (skunicode_file_name "libskunicode.a")
+set (skparagraph_file_name "libskparagraph.a")
 
-	list (APPEND skia_outputs "${skia_output_${flavor}}" "${skshaper_output_${flavor}}" "${skunicode_output_${flavor}}" "${skparagraph_output_${flavor}}")
-	list (APPEND skia_byproducts "${skia_SOURCE_DIR}/${out_dir}/build.ninja")
+foreach (flavor ${skia_flavors})
+	set (out_dir "out/cmake_${SKIA_REVISION}_${flavor}_${buildtype}_${options_hash}")
+	set (skia_outdir_${flavor} "${out_dir}")
+	set (skia_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/${skia_file_name}")
+	set (skshaper_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/${skshaper_file_name}")
+	set (skunicode_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/${skunicode_file_name}")
+	set (skparagraph_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/${skparagraph_file_name}")
+
+	set (skia_outputs_${flavor} "${skia_output_${flavor}}" "${skshaper_output_${flavor}}" "${skunicode_output_${flavor}}" "${skparagraph_output_${flavor}}")
+	list (APPEND skia_outputs ${skia_outputs_${flavor}})
+	set (skia_buildscript_${flavor} "${skia_SOURCE_DIR}/${out_dir}/${skia_buildscript_name}")
+	list (APPEND skia_byproducts ${skia_buildscript_${flavor}})
+	
 endforeach ()
+
+if (VENDOR_CACHE_DIRECTORY)
+	set (teststring "")
+
+	foreach (flavor ${skia_flavors})
+		set (cache_id "skia/${skia_outdir_${flavor}}")
+		set (outdir "${skia_SOURCE_DIR}/${skia_outdir_${flavor}}/")
+		
+		string (APPEND filecontent "
+			cachedir=\"${VENDOR_CACHE_DIRECTORY}/${cache_id}\"
+			mkdir -p \"\${cachedir}\"
+			cp ${skia_output_${flavor}} \"\${cachedir}/\"
+			cp ${skshaper_output_${flavor}} \"\${cachedir}/\"
+			cp ${skunicode_output_${flavor}} \"\${cachedir}/\"
+			cp ${skparagraph_output_${flavor}} \"\${cachedir}/\"
+			cp ${skia_buildscript_${flavor}} \"\${cachedir}/\"
+		")
+
+		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skia_buildscript_name} DESTINATION "${outdir}")
+		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skia_file_name} DESTINATION "${outdir}")
+		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skshaper_file_name} DESTINATION "${outdir}")
+		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skunicode_file_name} DESTINATION "${outdir}")
+		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skparagraph_file_name} DESTINATION "${outdir}")
+
+		if (NOT "${teststring}" STREQUAL "")
+			string (APPEND teststring " -a ")
+		endif ()
+		string (APPEND teststring "-f ${skia_output_${flavor}} -a -f ${skshaper_output_${flavor}} -a -f ${skunicode_output_${flavor}} -a -f ${skparagraph_output_${flavor}} -a -f ${skia_buildscript_${flavor}}")
+	endforeach ()
+
+	string (APPEND filecontent "
+		if [ ${teststring} ]; then
+			echo \"Using prebuilt skia binaries.\"
+			touch ${skia_byproducts}
+			exit 0
+		fi
+	")
+endif ()
 
 if(UNIX AND NOT APPLE)
 	set (SKIA_WARNING_FLAGS "\\\"-Wno-array-parameter\\\"")
@@ -106,7 +156,7 @@ if(UNIX AND NOT APPLE)
 	)
 	
 	foreach (flavor ${skia_flavors})
-		set (filecontent "${filecontent}
+		string (APPEND filecontent "
 			echo \"Building Skia (${flavor})\"
 			BUILD_DIR=./${skia_outdir_${flavor}}
 			mkdir -p \${BUILD_DIR}
@@ -124,7 +174,7 @@ elseif(APPLE)
 	STRING (CONCAT SKIA_ARGS "${SKIA_SHARED_ARGS}")
 	STRING (CONCAT SKIA_ARGS "skia_use_metal=true skia_use_gl=false " "${SKIA_ARGS}")
 
-	set (filecontent "${filecontent}
+	string (APPEND filecontent "
 		set -e
 		${SKIA_PRE_GN}
 
@@ -155,7 +205,7 @@ elseif(APPLE)
 	")
 	foreach (skia_lib ${skia_outputs})
 		get_filename_component (skia_lib_name ${skia_lib} NAME)
-		set (filecontent "${filecontent}
+		string (APPEND filecontent "
 			THINFILES=\"\"
 			CHANGED=\"\"
 			for ARCH in \${ARCHS}; do
@@ -211,6 +261,7 @@ if (NOT TARGET build_skia)
 	endif ()
 
 	foreach (flavor ${skia_flavors})
+
 		add_library (skia_${flavor} SHARED IMPORTED GLOBAL)
 		add_dependencies (skia_${flavor} build_skia)
 		set_target_properties (skia_${flavor} PROPERTIES
