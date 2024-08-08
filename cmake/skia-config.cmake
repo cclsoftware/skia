@@ -88,17 +88,6 @@ if (VENDOR_CACHE_DIRECTORY)
 		set (cache_id "skia/${skia_outdir_${flavor}}")
 		set (outdir "${skia_SOURCE_DIR}/${skia_outdir_${flavor}}/")
 		
-		string (APPEND filecontent "
-			cachedir=\"${VENDOR_CACHE_DIRECTORY}/${cache_id}\"
-			mkdir -p \"\${cachedir}\"
-			cp ${skia_output_${flavor}} \"\${cachedir}/\"
-			cp ${skshaper_output_${flavor}} \"\${cachedir}/\"
-			cp ${skunicode_output_${flavor}} \"\${cachedir}/\"
-			cp ${skparagraph_output_${flavor}} \"\${cachedir}/\"
-			cp ${skia_buildscript_${flavor}} \"\${cachedir}/\"
-		")
-
-		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skia_buildscript_name} DESTINATION "${outdir}")
 		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skia_file_name} DESTINATION "${outdir}")
 		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skshaper_file_name} DESTINATION "${outdir}")
 		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skunicode_file_name} DESTINATION "${outdir}")
@@ -107,7 +96,7 @@ if (VENDOR_CACHE_DIRECTORY)
 		if (NOT "${teststring}" STREQUAL "")
 			string (APPEND teststring " -a ")
 		endif ()
-		string (APPEND teststring "-f ${skia_output_${flavor}} -a -f ${skshaper_output_${flavor}} -a -f ${skunicode_output_${flavor}} -a -f ${skparagraph_output_${flavor}} -a -f ${skia_buildscript_${flavor}}")
+		string (APPEND teststring "-f ${skia_output_${flavor}} -a -f ${skshaper_output_${flavor}} -a -f ${skunicode_output_${flavor}} -a -f ${skparagraph_output_${flavor}}")
 	endforeach ()
 
 	string (APPEND filecontent "
@@ -226,6 +215,21 @@ elseif(APPLE)
 		")
 	endforeach ()
 	
+endif ()
+
+if (VENDOR_CACHE_DIRECTORY)
+	foreach (flavor ${skia_flavors})
+		set (cache_id "skia/${skia_outdir_${flavor}}")
+		
+		string (APPEND filecontent "
+			cachedir=\"${VENDOR_CACHE_DIRECTORY}/${cache_id}\"
+			mkdir -p \"\${cachedir}\"
+			cp ${skia_output_${flavor}} \"\${cachedir}/\"
+			cp ${skshaper_output_${flavor}} \"\${cachedir}/\"
+			cp ${skunicode_output_${flavor}} \"\${cachedir}/\"
+			cp ${skparagraph_output_${flavor}} \"\${cachedir}/\"
+		")
+	endforeach ()
 endif ()
 
 if (NOT TARGET build_skia)
