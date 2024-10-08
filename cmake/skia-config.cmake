@@ -58,7 +58,7 @@ elseif (APPLE)
 endif ()
 
 option (SKIA_USE_SYSTEM_HARFBUZZ "Link Skia against system harfbuzz library" ON)
-string (MD5 options_hash "${skia_FIND_COMPONENTS} ${SKIA_USE_SYSTEM_HARFBUZZ}")
+string (MD5 options_hash "${skia_FIND_COMPONENTS} ${SKIA_USE_SYSTEM_HARFBUZZ} ${VENDOR_SIMULATOR}")
 
 set (skia_buildscript_name "build.ninja")
 set (skia_file_name "libskia.a")
