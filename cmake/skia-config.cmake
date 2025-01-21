@@ -38,7 +38,7 @@ else ()
 	set (CCACHE_WRAPPER_PATH "")
 endif ()
 
-set (SKIA_SHARED_ARGS "cc=\\\"${CMAKE_C_COMPILER}\\\" cxx=\\\"${CMAKE_CXX_COMPILER}\\\" cc_wrapper=\\\"${CCACHE_WRAPPER_PATH}\\\" ${SKIA_IS_DEBUG} is_official_build=false skia_use_expat=false skia_use_harfbuzz=true skia_use_libwebp_decode=false skia_use_libwebp_encode=false skia_use_libheif=false skia_use_icu=true skia_use_sfntly=false skia_use_piex=false skia_use_zlib=true skia_use_xps=false skia_enable_spirv_validation=false skia_enable_tools=false skia_enable_skottie=false skia_enable_skshaper=true skia_enable_sksl=false skia_pdf_subset_harfbuzz=true skia_use_libjpeg_turbo_encode=true skia_use_libpng_encode=true skia_use_libjpeg_turbo_decode=true skia_use_libpng_decode=true skia_use_libgifcodec=true")
+set (SKIA_SHARED_ARGS "cc=\\\"${CMAKE_C_COMPILER}\\\" cxx=\\\"${CMAKE_CXX_COMPILER}\\\" cc_wrapper=\\\"${CCACHE_WRAPPER_PATH}\\\" ${SKIA_IS_DEBUG} is_official_build=false skia_enable_sktext=false skia_use_expat=false skia_use_harfbuzz=true skia_use_libwebp_decode=false skia_use_libwebp_encode=false skia_use_libheif=false skia_use_icu=true skia_use_sfntly=false skia_use_piex=false skia_use_zlib=true skia_use_xps=false skia_enable_spirv_validation=false skia_enable_tools=false skia_enable_skottie=false skia_enable_skshaper=true skia_enable_sksl=false skia_pdf_subset_harfbuzz=true skia_use_libjpeg_turbo_encode=true skia_use_libpng_encode=true skia_use_libjpeg_turbo_decode=true skia_use_libpng_decode=true skia_use_libgifcodec=true")
 
 set (filecontent
 	"#!${SHELL}")
