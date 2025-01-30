@@ -8,58 +8,36 @@
 #ifndef GrFPArgs_DEFINED
 #define GrFPArgs_DEFINED
 
-#include "include/core/SkMatrix.h"
+#include "include/private/base/SkAssert.h"
 
 class GrColorInfo;
 class GrRecordingContext;
-class SkMatrixProvider;
+class SkSurfaceProps;
 
 struct GrFPArgs {
+    enum class Scope {
+        kDefault,
+        kRuntimeEffect,
+    };
+
     GrFPArgs(GrRecordingContext* context,
-             const SkMatrixProvider& matrixProvider,
-             const GrColorInfo* dstColorInfo)
+             const GrColorInfo* dstColorInfo,
+             const SkSurfaceProps& surfaceProps,
+             Scope scope)
             : fContext(context)
-            , fMatrixProvider(matrixProvider)
-            , fDstColorInfo(dstColorInfo) {
+            , fDstColorInfo(dstColorInfo)
+            , fSurfaceProps(surfaceProps)
+            , fScope(scope) {
         SkASSERT(fContext);
     }
 
-    class WithPreLocalMatrix;
-
-    GrFPArgs withNewMatrixProvider(const SkMatrixProvider& provider) const {
-        GrFPArgs newArgs(fContext, provider, fDstColorInfo);
-        newArgs.fPreLocalMatrix = fPreLocalMatrix;
-        return newArgs;
-    }
-
     GrRecordingContext* fContext;
-    const SkMatrixProvider& fMatrixProvider;
-
-    const SkMatrix* fPreLocalMatrix  = nullptr;
 
     const GrColorInfo* fDstColorInfo;
-};
 
-class GrFPArgs::WithPreLocalMatrix final : public GrFPArgs {
-public:
-    WithPreLocalMatrix(const GrFPArgs& args, const SkMatrix& lm) : INHERITED(args) {
-        if (!lm.isIdentity()) {
-            if (fPreLocalMatrix) {
-                fStorage.setConcat(lm, *fPreLocalMatrix);
-                fPreLocalMatrix = fStorage.isIdentity() ? nullptr : &fStorage;
-            } else {
-                fPreLocalMatrix = &lm;
-            }
-        }
-    }
+    const SkSurfaceProps& fSurfaceProps;
 
-private:
-    WithPreLocalMatrix(const WithPreLocalMatrix&) = delete;
-    WithPreLocalMatrix& operator=(const WithPreLocalMatrix&) = delete;
-
-    SkMatrix fStorage;
-
-    using INHERITED = GrFPArgs;
+    Scope fScope;
 };
 
 #endif

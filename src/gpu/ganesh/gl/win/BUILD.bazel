@@ -1,18 +1,24 @@
-load("//bazel:macros.bzl", "exports_files_legacy", "generated_cc_atom")
+load("//bazel:skia_rules.bzl", "skia_cc_library")
 
-exports_files_legacy()
+package(
+    default_applicable_licenses = ["//:license"],
+)
 
 licenses(["notice"])
 
-generated_cc_atom(
-    name = "GrGLMakeNativeInterface_win_src",
-    srcs = ["GrGLMakeNativeInterface_win.cpp"],
-    visibility = ["//:__subpackages__"],
+skia_cc_library(
+    name = "win_factory",
+    srcs = [
+        "GrGLMakeNativeInterface_win.cpp",
+        "GrGLMakeWinInterface.cpp",
+    ],
+    hdrs = [
+        "//include/gpu/ganesh/gl/win:public_hdrs",
+    ],
+    defines = ["SK_DISABLE_LEGACY_GL_MAKE_NATIVE_INTERFACE"],
+    visibility = ["//:__pkg__"],
     deps = [
-        "//include/core:SkTypes_hdr",
-        "//include/gpu/gl:GrGLAssembleInterface_hdr",
-        "//include/gpu/gl:GrGLInterface_hdr",
-        "//src/core:SkLeanWindows_hdr",
-        "//src/gpu/ganesh/gl:GrGLUtil_hdr",
+        "//:core",
+        "//:ganesh_gl",
     ],
 )

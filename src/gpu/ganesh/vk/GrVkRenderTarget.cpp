@@ -7,20 +7,37 @@
 
 #include "src/gpu/ganesh/vk/GrVkRenderTarget.h"
 
-#include "include/gpu/GrBackendSurface.h"
-#include "include/gpu/GrDirectContext.h"
-#include "src/gpu/ganesh/GrBackendSurfaceMutableStateImpl.h"
+#include "include/core/SkSize.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/MutableTextureState.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/gpu/ganesh/vk/GrVkBackendSurface.h"
+#include "include/gpu/ganesh/vk/GrVkTypes.h"
+#include "include/gpu/vk/VulkanMutableTextureState.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "include/private/gpu/vk/SkiaVulkan.h"
+#include "src/gpu/ganesh/GrAttachment.h"
+#include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
+#include "src/gpu/ganesh/GrProgramInfo.h"
+#include "src/gpu/ganesh/GrResourceHandle.h"
 #include "src/gpu/ganesh/GrResourceProvider.h"
+#include "src/gpu/ganesh/GrSurface.h"
+#include "src/gpu/ganesh/vk/GrVkBackendSurfacePriv.h"
+#include "src/gpu/ganesh/vk/GrVkCaps.h"
 #include "src/gpu/ganesh/vk/GrVkCommandBuffer.h"
 #include "src/gpu/ganesh/vk/GrVkDescriptorSet.h"
 #include "src/gpu/ganesh/vk/GrVkFramebuffer.h"
 #include "src/gpu/ganesh/vk/GrVkGpu.h"
-#include "src/gpu/ganesh/vk/GrVkImageView.h"
 #include "src/gpu/ganesh/vk/GrVkResourceProvider.h"
 #include "src/gpu/ganesh/vk/GrVkUtil.h"
 
-#include "include/gpu/vk/GrVkTypes.h"
+#include <cstdint>
+#include <memory>
 
 #define VK_CALL(GPU, X) GR_VK_CALL(GPU->vkInterface(), X)
 
@@ -77,7 +94,7 @@ GrVkRenderTarget::GrVkRenderTarget(GrVkGpu* gpu,
         fResolveAttachment = fColorAttachment;
     }
 
-    SkASSERT(!resolveAttachment ||
+    SkASSERT(!fResolveAttachment ||
              (fResolveAttachment->isProtected() == fColorAttachment->isProtected()));
     SkASSERT(SkToBool(fColorAttachment->vkUsageFlags() & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT));
     this->setFlags();
@@ -129,7 +146,7 @@ sk_sp<GrVkRenderTarget> GrVkRenderTarget::MakeWrappedRenderTarget(
         SkISize dimensions,
         int sampleCnt,
         const GrVkImageInfo& info,
-        sk_sp<GrBackendSurfaceMutableStateImpl> mutableState) {
+        sk_sp<skgpu::MutableTextureState> mutableState) {
     SkASSERT(VK_NULL_HANDLE != info.fImage);
     SkASSERT(1 == info.fLevelCount);
     SkASSERT(sampleCnt >= 1 && info.fSampleCount >= 1);
@@ -146,7 +163,8 @@ sk_sp<GrVkRenderTarget> GrVkRenderTarget::MakeWrappedRenderTarget(
                                    std::move(mutableState),
                                    GrAttachment::UsageFlags::kColorAttachment,
                                    kBorrow_GrWrapOwnership,
-                                   GrWrapCacheable::kNo);
+                                   GrWrapCacheable::kNo,
+                                   /*label=*/"VkImage_WrappedAttachment");
     if (!wrappedAttachment) {
         return nullptr;
     }
@@ -163,7 +181,7 @@ sk_sp<GrVkRenderTarget> GrVkRenderTarget::MakeWrappedRenderTarget(
                                                   std::move(colorAttachment),
                                                   nullptr,
                                                   CreateType::kDirectlyWrapped,
-                                                  /*label=*/{});
+                                                  /*label=*/"Vk_MakeWrappedRenderTarget");
     return sk_sp<GrVkRenderTarget>(vkRT);
 }
 
@@ -187,8 +205,9 @@ sk_sp<GrVkRenderTarget> GrVkRenderTarget::MakeSecondaryCBRenderTarget(
     info.fImageUsageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
-    sk_sp<GrBackendSurfaceMutableStateImpl> mutableState(new GrBackendSurfaceMutableStateImpl(
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_QUEUE_FAMILY_IGNORED));
+    auto mutableState =
+            sk_make_sp<skgpu::MutableTextureState>(skgpu::MutableTextureStates::MakeVulkan(
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_QUEUE_FAMILY_IGNORED));
 
     sk_sp<GrVkImage> colorAttachment =
             GrVkImage::MakeWrapped(gpu,
@@ -198,6 +217,7 @@ sk_sp<GrVkRenderTarget> GrVkRenderTarget::MakeSecondaryCBRenderTarget(
                                    GrAttachment::UsageFlags::kColorAttachment,
                                    kBorrow_GrWrapOwnership,
                                    GrWrapCacheable::kNo,
+                                   "VkImage_ColorAttachment",
                                    true);
 
     std::unique_ptr<GrVkSecondaryCommandBuffer> scb(
@@ -211,7 +231,8 @@ sk_sp<GrVkRenderTarget> GrVkRenderTarget::MakeSecondaryCBRenderTarget(
             std::move(scb)));
 
     GrVkRenderTarget* vkRT =
-            new GrVkRenderTarget(gpu, dimensions, std::move(framebuffer), /*label=*/{});
+            new GrVkRenderTarget(gpu, dimensions, std::move(framebuffer),
+                                 /*label=*/"Vk_MakeSecondaryCBRenderTarget");
 
     return sk_sp<GrVkRenderTarget>(vkRT);
 }
@@ -389,13 +410,17 @@ void GrVkRenderTarget::createFramebuffer(bool withResolve,
                                   colorAttachment, resolve, stencil, compatibleHandle);
 }
 
-void GrVkRenderTarget::getAttachmentsDescriptor(GrVkRenderPass::AttachmentsDescriptor* desc,
+bool GrVkRenderTarget::getAttachmentsDescriptor(GrVkRenderPass::AttachmentsDescriptor* desc,
                                                 GrVkRenderPass::AttachmentFlags* attachmentFlags,
                                                 bool withResolve,
                                                 bool withStencil) {
     SkASSERT(!this->wrapsSecondaryCommandBuffer());
     const GrVkImage* colorAttachment =
             withResolve ? this->msaaAttachment() : this->colorAttachment();
+    if (!colorAttachment) {
+        SkDebugf("WARNING: Invalid color attachment -- possibly dmsaa attachment creation failed?");
+        return false;
+    }
 
     desc->fColor.fFormat = colorAttachment->imageFormat();
     desc->fColor.fSamples = colorAttachment->numSamples();
@@ -421,6 +446,8 @@ void GrVkRenderTarget::getAttachmentsDescriptor(GrVkRenderPass::AttachmentsDescr
         ++attachmentCount;
     }
     desc->fAttachmentCount = attachmentCount;
+
+    return true;
 }
 
 void GrVkRenderTarget::ReconstructAttachmentsDescriptor(const GrVkCaps& vkCaps,
@@ -428,7 +455,7 @@ void GrVkRenderTarget::ReconstructAttachmentsDescriptor(const GrVkCaps& vkCaps,
                                                         GrVkRenderPass::AttachmentsDescriptor* desc,
                                                         GrVkRenderPass::AttachmentFlags* flags) {
     VkFormat format;
-    SkAssertResult(programInfo.backendFormat().asVkFormat(&format));
+    SkAssertResult(GrBackendFormats::AsVkFormat(programInfo.backendFormat(), &format));
 
     desc->fColor.fFormat = format;
     desc->fColor.fSamples = programInfo.numSamples();
@@ -502,8 +529,10 @@ GrBackendRenderTarget GrVkRenderTarget::getBackendRenderTarget() const {
     SkASSERT(!this->wasDestroyed());
     // If we have a resolve attachment that is what we return for the backend render target
     const GrVkImage* beAttachment = this->externalAttachment();
-    return GrBackendRenderTarget(beAttachment->width(), beAttachment->height(),
-                                 beAttachment->vkImageInfo(), beAttachment->getMutableState());
+    return GrBackendRenderTargets::MakeVk(beAttachment->width(),
+                                          beAttachment->height(),
+                                          beAttachment->vkImageInfo(),
+                                          beAttachment->getMutableState());
 }
 
 GrVkGpu* GrVkRenderTarget::getVkGpu() const {

@@ -8,13 +8,29 @@
 #ifndef GrGpuResource_DEFINED
 #define GrGpuResource_DEFINED
 
-#include "include/private/SkNoncopyable.h"
+#include "include/core/SkString.h"
+#include "include/core/SkTypes.h"
+#include "include/private/base/SkNoncopyable.h"
+#include "include/private/base/SkTo.h"
 #include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/GpuTypesPriv.h"
 #include "src/gpu/ResourceKey.h"
 
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+
+class GrDirectContext;
 class GrGpu;
 class GrResourceCache;
+class GrSurface;
 class SkTraceMemoryDump;
+
+namespace skgpu {
+enum class Budgeted : bool;
+}
 
 /**
  * Base class for GrGpuResource. Provides the hooks for resources to interact with the cache.
@@ -50,19 +66,19 @@ public:
         }
     }
 
-    void addCommandBufferUsage() const {
+    void refCommandBuffer() const {
         // No barrier required.
         (void)fCommandBufferUsageCnt.fetch_add(+1, std::memory_order_relaxed);
     }
 
-    void removeCommandBufferUsage() const {
+    void unrefCommandBuffer() const {
         SkASSERT(!this->hasNoCommandBufferUsages());
         if (1 == fCommandBufferUsageCnt.fetch_add(-1, std::memory_order_acq_rel)) {
             this->notifyWillBeZero(LastRemovedRef::kCommandBufferUsage);
         }
     }
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
     int32_t testingOnly_getRefCnt() const { return this->getRefCnt(); }
 #endif
 
@@ -174,9 +190,12 @@ public:
         associated unique key. */
     const skgpu::UniqueKey& getUniqueKey() const { return fUniqueKey; }
 
-    std::string_view getLabel() const { return fLabel; }
+    std::string getLabel() const { return fLabel; }
 
-    void setLabel(std::string_view label) { fLabel = label; }
+    void setLabel(std::string_view label) {
+        fLabel = label;
+        this->onSetLabel();
+    }
 
     /**
      * Internal-only helper class used for manipulations of the resource by the cache.
@@ -216,10 +235,14 @@ public:
 
     static uint32_t CreateUniqueID();
 
+#if defined(GPU_TEST_UTILS)
+    virtual const GrSurface* asSurface() const { return nullptr; }
+#endif
+
 protected:
     // This must be called by every non-wrapped GrGpuObject. It should be called once the object is
     // fully initialized (i.e. only from the constructors of the final class).
-    void registerWithCache(SkBudgeted);
+    void registerWithCache(skgpu::Budgeted);
 
     // This must be called by every GrGpuObject that references any wrapped backend objects. It
     // should be called once the object is fully initialized (i.e. only from the constructors of the
@@ -283,6 +306,8 @@ private:
 
     virtual size_t onGpuMemorySize() const = 0;
 
+    virtual void onSetLabel() = 0;
+
     // See comments in CacheAccess and ResourcePriv.
     void setUniqueKey(const skgpu::UniqueKey&);
     void removeUniqueKey();
@@ -301,14 +326,14 @@ private:
     // This value reflects how recently this resource was accessed in the cache. This is maintained
     // by the cache.
     uint32_t fTimestamp;
-    GrStdSteadyClock::time_point fTimeWhenBecamePurgeable;
+    skgpu::StdSteadyClock::time_point fTimeWhenBecamePurgeable;
 
     static const size_t kInvalidGpuMemorySize = ~static_cast<size_t>(0);
     skgpu::ScratchKey fScratchKey;
     skgpu::UniqueKey fUniqueKey;
 
     // This is not ref'ed but abandon() or release() will be called before the GrGpu object
-    // is destroyed. Those calls set will this to NULL.
+    // is destroyed. Those calls will set this to NULL.
     GrGpu* fGpu;
     mutable size_t fGpuMemorySize = kInvalidGpuMemorySize;
 

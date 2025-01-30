@@ -4,26 +4,32 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
-#define SK_OPTS_NS skslc_standalone
-#include "include/core/SkGraphics.h"
 #include "include/core/SkStream.h"
-#include "include/private/SkStringView.h"
+#include "src/base/SkStringView.h"
 #include "src/core/SkCpu.h"
 #include "src/core/SkOpts.h"
-#include "src/opts/SkChecksum_opts.h"
-#include "src/opts/SkVM_opts.h"
 #include "src/sksl/SkSLCompiler.h"
 #include "src/sksl/SkSLFileOutputStream.h"
+#include "src/sksl/SkSLProgramSettings.h"
 #include "src/sksl/SkSLStringStream.h"
 #include "src/sksl/SkSLUtil.h"
+#include "src/sksl/codegen/SkSLCodeGenTypes.h"
+#include "src/sksl/codegen/SkSLGLSLCodeGenerator.h"
+#include "src/sksl/codegen/SkSLHLSLCodeGenerator.h"
+#include "src/sksl/codegen/SkSLMetalCodeGenerator.h"
 #include "src/sksl/codegen/SkSLPipelineStageCodeGenerator.h"
-#include "src/sksl/codegen/SkSLVMCodeGenerator.h"
-#include "src/sksl/ir/SkSLUnresolvedFunction.h"
+#include "src/sksl/codegen/SkSLRasterPipelineBuilder.h"
+#include "src/sksl/codegen/SkSLRasterPipelineCodeGenerator.h"
+#include "src/sksl/codegen/SkSLSPIRVCodeGenerator.h"
+#include "src/sksl/codegen/SkSLSPIRVValidator.h"
+#include "src/sksl/codegen/SkSLWGSLCodeGenerator.h"
+#include "src/sksl/codegen/SkSLWGSLValidator.h"
+#include "src/sksl/ir/SkSLFunctionDeclaration.h"
+#include "src/sksl/ir/SkSLProgram.h"
 #include "src/sksl/ir/SkSLVarDeclarations.h"
-#include "src/sksl/tracing/SkVMDebugTrace.h"
+#include "src/sksl/tracing/SkSLDebugTracePriv.h"
 #include "src/utils/SkShaderUtils.h"
-#include "src/utils/SkVMVisualizer.h"
+#include "tools/skslc/ProcessWorklist.h"
 
 #include "spirv-tools/libspirv.hpp"
 
@@ -33,7 +39,10 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-extern bool gSkVMAllowJIT;
+#if defined(SK_COMPILE_WITH_GN)
+namespace SkOpts {
+    size_t raster_pipeline_highp_stride = 1;
+}
 
 void SkDebugf(const char format[], ...) {
     va_list args;
@@ -41,19 +50,7 @@ void SkDebugf(const char format[], ...) {
     vfprintf(stderr, format, args);
     va_end(args);
 }
-
-namespace SkOpts {
-    decltype(hash_fn) hash_fn = skslc_standalone::hash_fn;
-    decltype(interpret_skvm) interpret_skvm = skslc_standalone::interpret_skvm;
-}
-
-enum class ResultCode {
-    kSuccess = 0,
-    kCompileError = 1,
-    kInputError = 2,
-    kOutputError = 3,
-    kConfigurationError = 4,
-};
+#endif
 
 static std::unique_ptr<SkWStream> as_SkWStream(SkSL::OutputStream& s) {
     struct Adapter : public SkWStream {
@@ -84,14 +81,276 @@ static bool consume_suffix(std::string* str, const char suffix[]) {
     return true;
 }
 
+class ShaderCapsTestFactory : public SkSL::ShaderCapsFactory {
+public:
+    static const SkSL::ShaderCaps* AddAndTrueToLoopCondition() {
+        static const SkSL::ShaderCaps* sCaps = []{
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fAddAndTrueToLoopCondition = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* CannotUseFractForNegativeValues() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fCanUseFractForNegativeValues = false;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* CannotUseFragCoord() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fCanUseFragCoord = false;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* CannotUseMinAndAbsTogether() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fCanUseMinAndAbsTogether = false;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* CannotUseVoidInSequenceExpressions() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fCanUseVoidInSequenceExpressions = false;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+
+    static const SkSL::ShaderCaps* DualSourceBlending() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fDualSourceBlendingSupport = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* EmulateAbsIntFunction() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fEmulateAbsIntFunction = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* FramebufferFetchSupport() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fFBFetchSupport = true;
+            caps->fFBFetchColorName = "FramebufferFragColor";  // a nice, backend-neutral name
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* MustDeclareFragmentFrontFacing() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fMustDeclareFragmentFrontFacing = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* MustForceNegatedAtanParamToFloat() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fMustForceNegatedAtanParamToFloat = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* MustForceNegatedLdexpParamToMultiply() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fMustForceNegatedLdexpParamToMultiply = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* MustGuardDivisionEvenAfterExplicitZeroCheck() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fMustGuardDivisionEvenAfterExplicitZeroCheck = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* NoBuiltinDeterminantSupport() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fBuiltinDeterminantSupport = false;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* NoBuiltinFMASupport() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fBuiltinFMASupport = false;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* NoExternalTextureSupport() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fExternalTextureSupport = false;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* RemovePowWithConstantExponent() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fRemovePowWithConstantExponent = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* RewriteDoWhileLoops() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fRewriteDoWhileLoops = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* RewriteMatrixComparisons() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fRewriteMatrixComparisons = true;
+            caps->fUsesPrecisionModifiers = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* RewriteMatrixVectorMultiply() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fRewriteMatrixVectorMultiply = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* RewriteSwitchStatements() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fRewriteSwitchStatements = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* SampleMaskSupport() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fShaderDerivativeSupport = true;
+            caps->fSampleMaskSupport = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* ShaderDerivativeExtensionString() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fShaderDerivativeSupport = true;
+            caps->fShaderDerivativeExtensionString = "GL_OES_standard_derivatives";
+            caps->fUsesPrecisionModifiers = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* UnfoldShortCircuitAsTernary() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fUnfoldShortCircuitAsTernary = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* UsesPrecisionModifiers() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 400";
+            caps->fUsesPrecisionModifiers = true;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* Version110() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 110";
+            caps->fGLSLGeneration = SkSL::GLSLGeneration::k110;
+            return caps.release();
+        }();
+        return sCaps;
+    }
+
+    static const SkSL::ShaderCaps* Version450Core() {
+        static const SkSL::ShaderCaps* sCaps = [] {
+            std::unique_ptr<SkSL::ShaderCaps> caps = MakeShaderCaps();
+            caps->fVersionDeclString = "#version 450 core";
+            return caps.release();
+        }();
+        return sCaps;
+    }
+};
+
 // Given a string containing an SkSL program, searches for a #pragma settings comment, like so:
 //    /*#pragma settings Default Sharpen*/
 // The passed-in Settings object will be updated accordingly. Any number of options can be provided.
 static bool detect_shader_settings(const std::string& text,
-                                   SkSL::Program::Settings* settings,
+                                   SkSL::ProgramSettings* settings,
                                    const SkSL::ShaderCaps** caps,
-                                   std::unique_ptr<SkSL::SkVMDebugTrace>* debugTrace) {
-    using Factory = SkSL::ShaderCapsFactory;
+                                   std::unique_ptr<SkSL::DebugTracePriv>* debugTrace) {
+    using Factory = ShaderCapsTestFactory;
 
     // Find a matching comment and isolate the name portion.
     static constexpr char kPragmaSettings[] = "/*#pragma settings ";
@@ -111,89 +370,82 @@ static bool detect_shader_settings(const std::string& text,
                 const size_t startingLength = settingsText.length();
 
                 if (consume_suffix(&settingsText, " AddAndTrueToLoopCondition")) {
-                    static auto s_addAndTrueCaps = Factory::AddAndTrueToLoopCondition();
-                    *caps = s_addAndTrueCaps.get();
+                    *caps = Factory::AddAndTrueToLoopCondition();
                 }
                 if (consume_suffix(&settingsText, " CannotUseFractForNegativeValues")) {
-                    static auto s_negativeFractCaps = Factory::CannotUseFractForNegativeValues();
-                    *caps = s_negativeFractCaps.get();
+                    *caps = Factory::CannotUseFractForNegativeValues();
                 }
                 if (consume_suffix(&settingsText, " CannotUseFragCoord")) {
-                    static auto s_noFragCoordCaps = Factory::CannotUseFragCoord();
-                    *caps = s_noFragCoordCaps.get();
+                    *caps = Factory::CannotUseFragCoord();
                 }
                 if (consume_suffix(&settingsText, " CannotUseMinAndAbsTogether")) {
-                    static auto s_minAbsCaps = Factory::CannotUseMinAndAbsTogether();
-                    *caps = s_minAbsCaps.get();
+                    *caps = Factory::CannotUseMinAndAbsTogether();
+                }
+                if (consume_suffix(&settingsText, " CannotUseVoidInSequenceExpressions")) {
+                    *caps = Factory::CannotUseVoidInSequenceExpressions();
+                }
+                if (consume_suffix(&settingsText, " DualSourceBlending")) {
+                    *caps = Factory::DualSourceBlending();
                 }
                 if (consume_suffix(&settingsText, " Default")) {
-                    static auto s_defaultCaps = Factory::Default();
-                    *caps = s_defaultCaps.get();
+                    *caps = Factory::Default();
                 }
                 if (consume_suffix(&settingsText, " EmulateAbsIntFunction")) {
-                    static auto s_emulateAbsIntCaps = Factory::EmulateAbsIntFunction();
-                    *caps = s_emulateAbsIntCaps.get();
+                    *caps = Factory::EmulateAbsIntFunction();
                 }
                 if (consume_suffix(&settingsText, " FramebufferFetchSupport")) {
-                    static auto s_fbFetchSupport = Factory::FramebufferFetchSupport();
-                    *caps = s_fbFetchSupport.get();
-                }
-                if (consume_suffix(&settingsText, " IncompleteShortIntPrecision")) {
-                    static auto s_incompleteShortIntCaps = Factory::IncompleteShortIntPrecision();
-                    *caps = s_incompleteShortIntCaps.get();
+                    *caps = Factory::FramebufferFetchSupport();
                 }
                 if (consume_suffix(&settingsText, " MustGuardDivisionEvenAfterExplicitZeroCheck")) {
-                    static auto s_div0Caps = Factory::MustGuardDivisionEvenAfterExplicitZeroCheck();
-                    *caps = s_div0Caps.get();
+                    *caps = Factory::MustGuardDivisionEvenAfterExplicitZeroCheck();
+                }
+                if (consume_suffix(&settingsText, " MustDeclareFragmentFrontFacing")) {
+                    *caps = Factory::MustDeclareFragmentFrontFacing();
                 }
                 if (consume_suffix(&settingsText, " MustForceNegatedAtanParamToFloat")) {
-                    static auto s_negativeAtanCaps = Factory::MustForceNegatedAtanParamToFloat();
-                    *caps = s_negativeAtanCaps.get();
+                    *caps = Factory::MustForceNegatedAtanParamToFloat();
                 }
                 if (consume_suffix(&settingsText, " MustForceNegatedLdexpParamToMultiply")) {
-                    static auto s_negativeLdexpCaps =
-                            Factory::MustForceNegatedLdexpParamToMultiply();
-                    *caps = s_negativeLdexpCaps.get();
+                    *caps = Factory::MustForceNegatedLdexpParamToMultiply();
+                }
+                if (consume_suffix(&settingsText, " NoBuiltinDeterminantSupport")) {
+                    *caps = Factory::NoBuiltinDeterminantSupport();
+                }
+                if (consume_suffix(&settingsText, " NoBuiltinFMASupport")) {
+                    *caps = Factory::NoBuiltinFMASupport();
+                }
+                if (consume_suffix(&settingsText, " NoExternalTextureSupport")) {
+                    *caps = Factory::NoExternalTextureSupport();
                 }
                 if (consume_suffix(&settingsText, " RemovePowWithConstantExponent")) {
-                    static auto s_powCaps = Factory::RemovePowWithConstantExponent();
-                    *caps = s_powCaps.get();
+                    *caps = Factory::RemovePowWithConstantExponent();
                 }
                 if (consume_suffix(&settingsText, " RewriteDoWhileLoops")) {
-                    static auto s_rewriteLoopCaps = Factory::RewriteDoWhileLoops();
-                    *caps = s_rewriteLoopCaps.get();
+                    *caps = Factory::RewriteDoWhileLoops();
                 }
                 if (consume_suffix(&settingsText, " RewriteSwitchStatements")) {
-                    static auto s_rewriteSwitchCaps = Factory::RewriteSwitchStatements();
-                    *caps = s_rewriteSwitchCaps.get();
+                    *caps = Factory::RewriteSwitchStatements();
                 }
                 if (consume_suffix(&settingsText, " RewriteMatrixVectorMultiply")) {
-                    static auto s_rewriteMatVecMulCaps = Factory::RewriteMatrixVectorMultiply();
-                    *caps = s_rewriteMatVecMulCaps.get();
+                    *caps = Factory::RewriteMatrixVectorMultiply();
                 }
                 if (consume_suffix(&settingsText, " RewriteMatrixComparisons")) {
-                    static auto s_rewriteMatrixComparisons = Factory::RewriteMatrixComparisons();
-                    *caps = s_rewriteMatrixComparisons.get();
+                    *caps = Factory::RewriteMatrixComparisons();
                 }
                 if (consume_suffix(&settingsText, " ShaderDerivativeExtensionString")) {
-                    static auto s_derivativeCaps = Factory::ShaderDerivativeExtensionString();
-                    *caps = s_derivativeCaps.get();
+                    *caps = Factory::ShaderDerivativeExtensionString();
                 }
                 if (consume_suffix(&settingsText, " UnfoldShortCircuitAsTernary")) {
-                    static auto s_ternaryCaps = Factory::UnfoldShortCircuitAsTernary();
-                    *caps = s_ternaryCaps.get();
+                    *caps = Factory::UnfoldShortCircuitAsTernary();
                 }
                 if (consume_suffix(&settingsText, " UsesPrecisionModifiers")) {
-                    static auto s_precisionCaps = Factory::UsesPrecisionModifiers();
-                    *caps = s_precisionCaps.get();
+                    *caps = Factory::UsesPrecisionModifiers();
                 }
                 if (consume_suffix(&settingsText, " Version110")) {
-                    static auto s_version110Caps = Factory::Version110();
-                    *caps = s_version110Caps.get();
+                    *caps = Factory::Version110();
                 }
                 if (consume_suffix(&settingsText, " Version450Core")) {
-                    static auto s_version450CoreCaps = Factory::Version450Core();
-                    *caps = s_version450CoreCaps.get();
+                    *caps = Factory::Version450Core();
                 }
                 if (consume_suffix(&settingsText, " AllowNarrowingConversions")) {
                     settings->fAllowNarrowingConversions = true;
@@ -201,17 +453,15 @@ static bool detect_shader_settings(const std::string& text,
                 if (consume_suffix(&settingsText, " ForceHighPrecision")) {
                     settings->fForceHighPrecision = true;
                 }
-                if (consume_suffix(&settingsText, " NoES2Restrictions")) {
-                    settings->fEnforceES2Restrictions = false;
-                }
                 if (consume_suffix(&settingsText, " NoInline")) {
+                    settings->fInlineThreshold = 0;
+                }
+                if (consume_suffix(&settingsText, " NoOptimize")) {
+                    settings->fOptimize = false;
                     settings->fInlineThreshold = 0;
                 }
                 if (consume_suffix(&settingsText, " NoRTFlip")) {
                     settings->fForceNoRTFlip = true;
-                }
-                if (consume_suffix(&settingsText, " NoTraceVarInSkVMDebugTrace")) {
-                    settings->fAllowTraceVarInSkVMDebugTrace = false;
                 }
                 if (consume_suffix(&settingsText, " InlineThresholdMax")) {
                     settings->fInlineThreshold = INT_MAX;
@@ -219,9 +469,9 @@ static bool detect_shader_settings(const std::string& text,
                 if (consume_suffix(&settingsText, " Sharpen")) {
                     settings->fSharpenTextures = true;
                 }
-                if (consume_suffix(&settingsText, " SkVMDebugTrace")) {
+                if (consume_suffix(&settingsText, " DebugTrace")) {
                     settings->fOptimize = false;
-                    *debugTrace = std::make_unique<SkSL::SkVMDebugTrace>();
+                    *debugTrace = std::make_unique<SkSL::DebugTracePriv>();
                 }
 
                 if (settingsText.empty()) {
@@ -262,7 +512,7 @@ static bool set_flag(std::optional<bool>* flag, const char* name, bool value) {
 /**
  * Handle a single input.
  */
-ResultCode processCommand(const std::vector<std::string>& args) {
+static ResultCode process_command(SkSpan<std::string> args) {
     std::optional<bool> honorSettings;
     std::vector<std::string> paths;
     for (size_t i = 1; i < args.size(); ++i) {
@@ -298,30 +548,36 @@ ResultCode processCommand(const std::vector<std::string>& args) {
         kind = SkSL::ProgramKind::kVertex;
     } else if (skstd::ends_with(inputPath, ".frag") || skstd::ends_with(inputPath, ".sksl")) {
         kind = SkSL::ProgramKind::kFragment;
+    } else if (skstd::ends_with(inputPath, ".mvert")) {
+        kind = SkSL::ProgramKind::kMeshVertex;
+    } else if (skstd::ends_with(inputPath, ".mfrag")) {
+        kind = SkSL::ProgramKind::kMeshFragment;
+    } else if (skstd::ends_with(inputPath, ".compute")) {
+        kind = SkSL::ProgramKind::kCompute;
     } else if (skstd::ends_with(inputPath, ".rtb")) {
         kind = SkSL::ProgramKind::kRuntimeBlender;
     } else if (skstd::ends_with(inputPath, ".rtcf")) {
         kind = SkSL::ProgramKind::kRuntimeColorFilter;
     } else if (skstd::ends_with(inputPath, ".rts")) {
         kind = SkSL::ProgramKind::kRuntimeShader;
+    } else if (skstd::ends_with(inputPath, ".privrts")) {
+        kind = SkSL::ProgramKind::kPrivateRuntimeShader;
     } else {
-        printf("input filename must end in '.vert', '.frag', '.rtb', '.rtcf', "
-               "'.rts' or '.sksl'\n");
+        printf("input filename must end in '.vert', '.frag', '.mvert', '.mfrag', '.compute', "
+               "'.rtb', '.rtcf', '.rts', '.privrts', or '.sksl'\n");
         return ResultCode::kInputError;
     }
 
     std::ifstream in(inputPath);
-    std::string text((std::istreambuf_iterator<char>(in)),
-                       std::istreambuf_iterator<char>());
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     if (in.rdstate()) {
         printf("error reading '%s'\n", inputPath.c_str());
         return ResultCode::kInputError;
     }
 
-    SkSL::Program::Settings settings;
-    auto standaloneCaps = SkSL::ShaderCapsFactory::Standalone();
-    const SkSL::ShaderCaps* caps = standaloneCaps.get();
-    std::unique_ptr<SkSL::SkVMDebugTrace> debugTrace;
+    SkSL::ProgramSettings settings;
+    const SkSL::ShaderCaps* caps = SkSL::ShaderCapsFactory::Standalone();
+    std::unique_ptr<SkSL::DebugTracePriv> debugTrace;
     if (*honorSettings) {
         if (!detect_shader_settings(text, &settings, &caps, &debugTrace)) {
             return ResultCode::kInputError;
@@ -335,9 +591,8 @@ ResultCode processCommand(const std::vector<std::string>& args) {
     settings.fRTFlipSet     = 0;
     settings.fRTFlipBinding = 0;
 
-    auto emitCompileError = [&](SkSL::FileOutputStream& out, const char* errorText) {
+    auto emitCompileError = [&](const char* errorText) {
         // Overwrite the compiler output, if any, with an error message.
-        out.close();
         SkSL::FileOutputStream errorStream(outputPath.c_str());
         errorStream.writeText("### Compilation failed:\n\n");
         errorStream.writeText(errorText);
@@ -348,14 +603,15 @@ ResultCode processCommand(const std::vector<std::string>& args) {
 
     auto compileProgram = [&](const auto& writeFn) -> ResultCode {
         SkSL::FileOutputStream out(outputPath.c_str());
-        SkSL::Compiler compiler(caps);
+        SkSL::Compiler compiler;
         if (!out.isValid()) {
             printf("error writing '%s'\n", outputPath.c_str());
             return ResultCode::kOutputError;
         }
         std::unique_ptr<SkSL::Program> program = compiler.convertProgram(kind, text, settings);
-        if (!program || !writeFn(compiler, *program, out)) {
-            emitCompileError(out, compiler.errorText().c_str());
+        if (!program || !writeFn(compiler, caps, *program, out)) {
+            out.close();
+            emitCompileError(compiler.errorText().c_str());
             return ResultCode::kCompileError;
         }
         if (!out.close()) {
@@ -365,38 +621,51 @@ ResultCode processCommand(const std::vector<std::string>& args) {
         return ResultCode::kSuccess;
     };
 
-    auto compileProgramForSkVM = [&](const auto& writeFn) -> ResultCode {
+    auto compileProgramAsRuntimeShader = [&](const auto& writeFn) -> ResultCode {
         if (kind == SkSL::ProgramKind::kVertex) {
-            printf("%s: SkVM does not support vertex programs\n", outputPath.c_str());
-            return ResultCode::kOutputError;
+            emitCompileError("Runtime shaders do not support vertex programs\n");
+            return ResultCode::kCompileError;
         }
         if (kind == SkSL::ProgramKind::kFragment) {
             // Handle .sksl and .frag programs as runtime shaders.
-            kind = SkSL::ProgramKind::kRuntimeShader;
+            kind = SkSL::ProgramKind::kPrivateRuntimeShader;
         }
         return compileProgram(writeFn);
     };
 
     if (skstd::ends_with(outputPath, ".spirv")) {
-        return compileProgram(
-                [](SkSL::Compiler& compiler, SkSL::Program& program, SkSL::OutputStream& out) {
-                    return compiler.toSPIRV(program, out);
-                });
+        return compileProgram([](SkSL::Compiler& compiler,
+                                 const SkSL::ShaderCaps* shaderCaps,
+                                 SkSL::Program& program,
+                                 SkSL::OutputStream& out) {
+            return SkSL::ToSPIRV(program, shaderCaps, out, SkSL::ValidateSPIRVAndDissassemble);
+        });
     } else if (skstd::ends_with(outputPath, ".asm.frag") ||
-               skstd::ends_with(outputPath, ".asm.vert")) {
+               skstd::ends_with(outputPath, ".asm.vert") ||
+               skstd::ends_with(outputPath, ".asm.comp")) {
         return compileProgram(
-                [](SkSL::Compiler& compiler, SkSL::Program& program, SkSL::OutputStream& out) {
+                [](SkSL::Compiler& compiler,
+                   const SkSL::ShaderCaps* shaderCaps,
+                   SkSL::Program& program,
+                   SkSL::OutputStream& out) {
                     // Compile program to SPIR-V assembly in a string-stream.
                     SkSL::StringStream assembly;
-                    if (!compiler.toSPIRV(program, assembly)) {
+                    if (!SkSL::ToSPIRV(program,
+                                       shaderCaps,
+                                       assembly,
+                                       SkSL::ValidateSPIRVAndDissassemble)) {
                         return false;
                     }
                     // Convert the string-stream to a SPIR-V disassembly.
                     spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_0);
                     const std::string& spirv(assembly.str());
                     std::string disassembly;
+                    uint32_t options = spvtools::SpirvTools::kDefaultDisassembleOption;
+                    options |= SPV_BINARY_TO_TEXT_OPTION_INDENT;
                     if (!tools.Disassemble((const uint32_t*)spirv.data(),
-                                           spirv.size() / 4, &disassembly)) {
+                                           spirv.size() / 4,
+                                           &disassembly,
+                                           options)) {
                         return false;
                     }
                     // Finally, write the disassembly to our output stream.
@@ -404,208 +673,138 @@ ResultCode processCommand(const std::vector<std::string>& args) {
                     return true;
                 });
     } else if (skstd::ends_with(outputPath, ".glsl")) {
-        return compileProgram(
-                [](SkSL::Compiler& compiler, SkSL::Program& program, SkSL::OutputStream& out) {
-                    return compiler.toGLSL(program, out);
-                });
+        return compileProgram([](SkSL::Compiler& compiler,
+                                 const SkSL::ShaderCaps* shaderCaps,
+                                 SkSL::Program& program,
+                                 SkSL::OutputStream& out) {
+            return SkSL::ToGLSL(program, shaderCaps, out, SkSL::PrettyPrint::kYes);
+        });
     } else if (skstd::ends_with(outputPath, ".metal")) {
-        return compileProgram(
-                [](SkSL::Compiler& compiler, SkSL::Program& program, SkSL::OutputStream& out) {
-                    return compiler.toMetal(program, out);
-                });
+        return compileProgram([](SkSL::Compiler& compiler,
+                                 const SkSL::ShaderCaps* shaderCaps,
+                                 SkSL::Program& program,
+                                 SkSL::OutputStream& out) {
+            return SkSL::ToMetal(program, shaderCaps, out, SkSL::PrettyPrint::kYes);
+        });
     } else if (skstd::ends_with(outputPath, ".hlsl")) {
-        return compileProgram(
-                [](SkSL::Compiler& compiler, SkSL::Program& program, SkSL::OutputStream& out) {
-                    return compiler.toHLSL(program, out);
-                });
+        return compileProgram([](SkSL::Compiler& compiler,
+                                 const SkSL::ShaderCaps* shaderCaps,
+                                 SkSL::Program& program,
+                                 SkSL::OutputStream& out) {
+            return SkSL::ToHLSL(program, shaderCaps, out, SkSL::ValidateSPIRVAndDissassemble);
+        });
     } else if (skstd::ends_with(outputPath, ".wgsl")) {
-        return compileProgram(
-                [](SkSL::Compiler& compiler, SkSL::Program& program, SkSL::OutputStream& out) {
-                    return compiler.toWGSL(program, out);
-                });
-    } else if (skstd::ends_with(outputPath, ".skvm")) {
-        return compileProgramForSkVM(
-                [&](SkSL::Compiler&, SkSL::Program& program, SkSL::OutputStream& out) {
-                    skvm::Builder builder{skvm::Features{}};
-                    if (!SkSL::testingOnly_ProgramToSkVMShader(program, &builder,
-                                                               debugTrace.get())) {
-                        return false;
-                    }
-
-                    std::unique_ptr<SkWStream> redirect = as_SkWStream(out);
-                    if (debugTrace) {
-                        debugTrace->dump(redirect.get());
-                    }
-                    builder.done().dump(redirect.get());
-                    return true;
-                });
+        return compileProgram([](SkSL::Compiler& compiler,
+                                 const SkSL::ShaderCaps* shaderCaps,
+                                 SkSL::Program& program,
+                                 SkSL::OutputStream& out) {
+            return SkSL::ToWGSL(program,
+                                shaderCaps,
+                                out,
+                                SkSL::PrettyPrint::kYes,
+                                SkSL::IncludeSyntheticCode::kYes,
+                                SkSL::ValidateWGSL);
+        });
+    } else if (skstd::ends_with(outputPath, ".skrp")) {
+        settings.fMaxVersionAllowed = SkSL::Version::k300;
+        return compileProgramAsRuntimeShader([&](SkSL::Compiler& compiler,
+                                                 const SkSL::ShaderCaps* shaderCaps,
+                                                 SkSL::Program& program,
+                                                 SkSL::OutputStream& out) {
+            SkSL::DebugTracePriv skrpDebugTrace;
+            const SkSL::FunctionDeclaration* main = program.getFunction("main");
+            if (!main) {
+                compiler.errorReporter().error({}, "code has no entrypoint");
+                return false;
+            }
+            bool wantTraceOps = (debugTrace != nullptr);
+            std::unique_ptr<SkSL::RP::Program> rasterProg = SkSL::MakeRasterPipelineProgram(
+                    program, *main->definition(), &skrpDebugTrace, wantTraceOps);
+            if (!rasterProg) {
+                compiler.errorReporter().error({}, "code is not supported");
+                return false;
+            }
+            rasterProg->dump(as_SkWStream(out).get(), /*writeInstructionCount=*/true);
+            return true;
+        });
     } else if (skstd::ends_with(outputPath, ".stage")) {
-        return compileProgram(
-                [](SkSL::Compiler&, SkSL::Program& program, SkSL::OutputStream& out) {
-                    class Callbacks : public SkSL::PipelineStage::Callbacks {
-                    public:
-                        std::string getMangledName(const char* name) override {
-                            return std::string(name) + "_0";
-                        }
-
-                        std::string declareUniform(const SkSL::VarDeclaration* decl) override {
-                            fOutput += decl->description();
-                            return std::string(decl->var().name());
-                        }
-
-                        void defineFunction(const char* decl,
-                                            const char* body,
-                                            bool /*isMain*/) override {
-                            fOutput += std::string(decl) + "{" + body + "}";
-                        }
-
-                        void declareFunction(const char* decl) override {
-                            fOutput += std::string(decl) + ";";
-                        }
-
-                        void defineStruct(const char* definition) override {
-                            fOutput += definition;
-                        }
-
-                        void declareGlobal(const char* declaration) override {
-                            fOutput += declaration;
-                        }
-
-                        std::string sampleShader(int index, std::string coords) override {
-                            return "child_" + std::to_string(index) + ".eval(" + coords + ")";
-                        }
-
-                        std::string sampleColorFilter(int index, std::string color) override {
-                            return "child_" + std::to_string(index) + ".eval(" + color + ")";
-                        }
-
-                        std::string sampleBlender(int index,
-                                                  std::string src,
-                                                  std::string dst) override {
-                            return "child_" + std::to_string(index) + ".eval(" + src + ", " +
-                                   dst + ")";
-                        }
-
-                        std::string toLinearSrgb(std::string color) override {
-                            return "toLinearSrgb(" + color + ")";
-                        }
-                        std::string fromLinearSrgb(std::string color) override {
-                            return "fromLinearSrgb(" + color + ")";
-                        }
-
-                        std::string fOutput;
-                    };
-                    // The .stage output looks almost like valid SkSL, but not quite.
-                    // The PipelineStageGenerator bridges the gap between the SkSL in `program`,
-                    // and the C++ FP builder API (see GrSkSLFP). In that API, children don't need
-                    // to be declared (so they don't emit declarations here). Children are sampled
-                    // by index, not name - so all children here are just "child_N".
-                    // The input color and coords have names in the original SkSL (as parameters to
-                    // main), but those are ignored here. References to those variables become
-                    // "_coords" and "_inColor". At runtime, those variable names are irrelevant
-                    // when the new SkSL is emitted inside the FP - references to those variables
-                    // are replaced with strings from EmitArgs, and might be varyings or differently
-                    // named parameters.
-                    Callbacks callbacks;
-                    SkSL::PipelineStage::ConvertProgram(program, "_coords", "_inColor",
-                                                        "_canvasColor", &callbacks);
-                    out.writeString(SkShaderUtils::PrettyPrint(callbacks.fOutput));
-                    return true;
-                });
-    } else if (skstd::ends_with(outputPath, ".html")) {
-        settings.fAllowTraceVarInSkVMDebugTrace = false;
-
-        SkCpu::CacheRuntimeFeatures();
-        gSkVMAllowJIT = true;
-        return compileProgramForSkVM(
-            [&](SkSL::Compiler&, SkSL::Program& program, SkSL::OutputStream& out) {
-                if (!debugTrace) {
-                    debugTrace = std::make_unique<SkSL::SkVMDebugTrace>();
-                    debugTrace->setSource(text.c_str());
-                }
-                auto visualizer = std::make_unique<skvm::viz::Visualizer>(debugTrace.get());
-                skvm::Builder builder(skvm::Features{}, /*createDuplicates=*/true);
-                if (!SkSL::testingOnly_ProgramToSkVMShader(program, &builder, debugTrace.get())) {
-                    return false;
+        return compileProgram([](SkSL::Compiler&,
+                                 const SkSL::ShaderCaps* shaderCaps,
+                                 SkSL::Program& program,
+                                 SkSL::OutputStream& out) {
+            class Callbacks : public SkSL::PipelineStage::Callbacks {
+            public:
+                std::string getMangledName(const char* name) override {
+                    return std::string(name) + "_0";
                 }
 
-                std::unique_ptr<SkWStream> redirect = as_SkWStream(out);
-                skvm::Program p = builder.done(
-                        /*debug_name=*/nullptr, /*allow_jit=*/true, std::move(visualizer));
-#if defined(SKVM_JIT)
-                SkDynamicMemoryWStream asmFile;
-                p.disassemble(&asmFile);
-                auto dumpData = asmFile.detachAsData();
-                std::string dumpString(static_cast<const char*>(dumpData->data()),dumpData->size());
-                p.visualize(redirect.get(), dumpString.c_str());
-#else
-                p.visualize(redirect.get(), nullptr);
-#endif
-                return true;
-            });
+                std::string declareUniform(const SkSL::VarDeclaration* decl) override {
+                    fOutput += decl->description();
+                    return std::string(decl->var()->name());
+                }
+
+                void defineFunction(const char* decl, const char* body, bool /*isMain*/) override {
+                    fOutput += std::string(decl) + '{' + body + '}';
+                }
+
+                void declareFunction(const char* decl) override { fOutput += decl; }
+
+                void defineStruct(const char* definition) override { fOutput += definition; }
+
+                void declareGlobal(const char* declaration) override { fOutput += declaration; }
+
+                std::string sampleShader(int index, std::string coords) override {
+                    return "child_" + std::to_string(index) + ".eval(" + coords + ')';
+                }
+
+                std::string sampleColorFilter(int index, std::string color) override {
+                    return "child_" + std::to_string(index) + ".eval(" + color + ')';
+                }
+
+                std::string sampleBlender(int index, std::string src, std::string dst) override {
+                    return "child_" + std::to_string(index) + ".eval(" + src + ", " + dst + ')';
+                }
+
+                std::string toLinearSrgb(std::string color) override {
+                    return "toLinearSrgb(" + color + ')';
+                }
+                std::string fromLinearSrgb(std::string color) override {
+                    return "fromLinearSrgb(" + color + ')';
+                }
+
+                std::string fOutput;
+            };
+            // The .stage output looks almost like valid SkSL, but not quite.
+            // The PipelineStageGenerator bridges the gap between the SkSL in `program`,
+            // and the C++ FP builder API (see GrSkSLFP). In that API, children don't need
+            // to be declared (so they don't emit declarations here). Children are sampled
+            // by index, not name - so all children here are just "child_N".
+            // The input color and coords have names in the original SkSL (as parameters to
+            // main), but those are ignored here. References to those variables become
+            // "_coords" and "_inColor". At runtime, those variable names are irrelevant
+            // when the new SkSL is emitted inside the FP - references to those variables
+            // are replaced with strings from EmitArgs, and might be varyings or differently
+            // named parameters.
+            Callbacks callbacks;
+            SkSL::PipelineStage::ConvertProgram(program, "_coords", "_inColor",
+                                                "_canvasColor", &callbacks);
+            out.writeString(SkShaderUtils::PrettyPrint(callbacks.fOutput));
+            return true;
+        });
     } else {
         printf("expected output path to end with one of: .glsl, .html, .metal, .hlsl, .wgsl, "
-               ".spirv, .asm.vert, .asm.frag, .skvm, .stage (got '%s')\n",
+               ".spirv, .asm.vert, .asm.frag, .asm.comp, .skrp, .stage (got '%s')\n",
                outputPath.c_str());
         return ResultCode::kConfigurationError;
     }
     return ResultCode::kSuccess;
 }
 
-/**
- * Processes multiple inputs in a single invocation of skslc.
- */
-ResultCode processWorklist(const char* worklistPath) {
-    std::string inputPath(worklistPath);
-    if (!skstd::ends_with(inputPath, ".worklist")) {
-        printf("expected .worklist file, found: %s\n\n", worklistPath);
-        show_usage();
-        return ResultCode::kConfigurationError;
-    }
-
-    // The worklist contains one line per argument to pass to skslc. When a blank line is reached,
-    // those arguments will be passed to `processCommand`.
-    auto resultCode = ResultCode::kSuccess;
-    std::vector<std::string> args = {"skslc"};
-    std::ifstream in(worklistPath);
-    for (std::string line; std::getline(in, line); ) {
-        if (in.rdstate()) {
-            printf("error reading '%s'\n", worklistPath);
-            return ResultCode::kInputError;
-        }
-
-        if (!line.empty()) {
-            // We found an argument. Remember it.
-            args.push_back(std::move(line));
-        } else {
-            // We found a blank line. If we have any arguments stored up, process them as a command.
-            if (!args.empty()) {
-                ResultCode outcome = processCommand(args);
-                resultCode = std::max(resultCode, outcome);
-
-                // Clear every argument except the first ("skslc").
-                args.resize(1);
-            }
-        }
-    }
-
-    // If the worklist ended with a list of arguments but no blank line, process those now.
-    if (args.size() > 1) {
-        ResultCode outcome = processCommand(args);
-        resultCode = std::max(resultCode, outcome);
-    }
-
-    // Return the "worst" status we encountered. For our purposes, compilation errors are the least
-    // serious, because they are expected to occur in unit tests. Other types of errors are not
-    // expected at all during a build.
-    return resultCode;
-}
-
 int main(int argc, const char** argv) {
     if (argc == 2) {
         // Worklists are the only two-argument case for skslc, and we don't intend to support
         // nested worklists, so we can process them here.
-        return (int)processWorklist(argv[1]);
+        return (int)ProcessWorklist(argv[1], process_command);
     } else {
         // Process non-worklist inputs.
         std::vector<std::string> args;
@@ -613,6 +812,6 @@ int main(int argc, const char** argv) {
             args.push_back(argv[index]);
         }
 
-        return (int)processCommand(args);
+        return (int)process_command(args);
     }
 }

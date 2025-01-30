@@ -12,7 +12,8 @@
 #include "include/core/SkScalar.h"
 #include "include/core/SkTypes.h"
 
-#include <string.h>
+#include <cstddef>
+#include <cstring>
 
 class SkCanvas;
 class SkFont;

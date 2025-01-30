@@ -5,9 +5,9 @@
  * found in the LICENSE file.
  */
 
-
-#include "src/gpu/ganesh/GrShaderCaps.h"
 #include "src/gpu/ganesh/GrShaderVar.h"
+
+#include "src/core/SkSLTypeShared.h"
 
 static const char* type_modifier_string(GrShaderVar::TypeModifier t) {
     switch (t) {
@@ -34,10 +34,10 @@ void GrShaderVar::appendDecl(const GrShaderCaps* shaderCaps, SkString* out) cons
     if (this->isArray()) {
         SkASSERT(this->getArrayCount() > 0);
         out->appendf("%s %s[%d]",
-                     GrGLSLTypeString(effectiveType),
+                     SkSLTypeString(effectiveType),
                      this->getName().c_str(),
                      this->getArrayCount());
     } else {
-        out->appendf("%s %s", GrGLSLTypeString(effectiveType), this->getName().c_str());
+        out->appendf("%s %s", SkSLTypeString(effectiveType), this->getName().c_str());
     }
 }

@@ -9,18 +9,33 @@
 #ifndef GrVkRenderTarget_DEFINED
 #define GrVkRenderTarget_DEFINED
 
+#include "include/core/SkRefCnt.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkTo.h"
 #include "src/gpu/ganesh/GrRenderTarget.h"
 #include "src/gpu/ganesh/vk/GrVkImage.h"
-
-#include "include/gpu/vk/GrVkTypes.h"
 #include "src/gpu/ganesh/vk/GrVkRenderPass.h"
 #include "src/gpu/ganesh/vk/GrVkResourceProvider.h"
 
+#include <cstddef>
+#include <string_view>
+#include <utility>
+
+class GrAttachment;
+class GrProgramInfo;
+class GrVkCaps;
+class GrVkDescriptorSet;
 class GrVkFramebuffer;
 class GrVkGpu;
 class GrVkImageView;
-
+struct GrVkDrawableInfo;
 struct GrVkImageInfo;
+struct SkISize;
+
+namespace skgpu {
+class MutableTextureState;
+}
 
 class GrVkRenderTarget : public GrRenderTarget {
 public:
@@ -28,7 +43,7 @@ public:
                                                            SkISize,
                                                            int sampleCnt,
                                                            const GrVkImageInfo&,
-                                                           sk_sp<GrBackendSurfaceMutableStateImpl>);
+                                                           sk_sp<skgpu::MutableTextureState>);
 
     static sk_sp<GrVkRenderTarget> MakeSecondaryCBRenderTarget(GrVkGpu*,
                                                                SkISize,
@@ -100,7 +115,7 @@ public:
 
     GrBackendRenderTarget getBackendRenderTarget() const override;
 
-    void getAttachmentsDescriptor(GrVkRenderPass::AttachmentsDescriptor* desc,
+    bool getAttachmentsDescriptor(GrVkRenderPass::AttachmentsDescriptor* desc,
                                   GrVkRenderPass::AttachmentFlags* flags,
                                   bool withResolve,
                                   bool withStencil);
@@ -132,6 +147,8 @@ protected:
     // This returns zero since the memory should all be handled by the attachments
     size_t onGpuMemorySize() const override { return 0; }
 
+    void onSetLabel() override{}
+
 private:
     // For external framebuffers that wrap a secondary command buffer
     GrVkRenderTarget(GrVkGpu* gpu,
@@ -160,8 +177,8 @@ private:
 
     // In Vulkan we call the release proc after we are finished with the underlying
     // GrVkImage::Resource object (which occurs after the GPU has finished all work on it).
-    void onSetRelease(sk_sp<skgpu::RefCntedCallback> releaseHelper) override {
-        // Forward the release proc on to the GrVkImage of the release attachment if we have one,
+    void onSetRelease(sk_sp<RefCntedReleaseProc> releaseHelper) override {
+        // Forward the release proc on to the GrVkImage of the resolve attachment if we have one,
         // otherwise the color attachment.
         GrVkImage* attachment =
                 fResolveAttachment ? fResolveAttachment.get() : fColorAttachment.get();

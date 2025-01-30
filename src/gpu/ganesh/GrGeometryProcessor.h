@@ -8,22 +8,36 @@
 #ifndef GrGeometryProcessor_DEFINED
 #define GrGeometryProcessor_DEFINED
 
+#include "include/core/SkMatrix.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/private/base/SkAlign.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkTo.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/core/SkSLTypeShared.h"
 #include "src/gpu/Swizzle.h"
-#include "src/gpu/ganesh/GrColor.h"
 #include "src/gpu/ganesh/GrFragmentProcessor.h"
 #include "src/gpu/ganesh/GrProcessor.h"
+#include "src/gpu/ganesh/GrSamplerState.h"
 #include "src/gpu/ganesh/GrShaderCaps.h"
 #include "src/gpu/ganesh/GrShaderVar.h"
 #include "src/gpu/ganesh/glsl/GrGLSLProgramDataManager.h"
 #include "src/gpu/ganesh/glsl/GrGLSLUniformHandler.h"
 #include "src/gpu/ganesh/glsl/GrGLSLVarying.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <tuple>
 #include <unordered_map>
 
 class GrGLSLFPFragmentBuilder;
-class GrGLSLVaryingHandler;
-class GrGLSLUniformHandler;
 class GrGLSLVertexBuilder;
+class GrPipeline;
+namespace skgpu {
+class KeyBuilder;
+}
 
 /**
  * The GrGeometryProcessor represents some kind of geometric primitive.  This includes the shape
@@ -194,10 +208,6 @@ public:
     size_t vertexStride() const { return fVertexAttributes.stride(); }
     size_t instanceStride() const { return fInstanceAttributes.stride(); }
 
-    bool willUseTessellationShaders() const {
-        return fShaders & (kTessControl_GrShaderFlag | kTessEvaluation_GrShaderFlag);
-    }
-
     /**
      * Computes a key for the transforms owned by an FP based on the shader code that will be
      * emitted by the primitive processor to implement them.
@@ -243,29 +253,13 @@ protected:
         SkASSERT(attrCount >= 0);
         fInstanceAttributes.initImplicit(attrs, attrCount);
     }
-    void setWillUseTessellationShaders() {
-        fShaders |= kTessControl_GrShaderFlag | kTessEvaluation_GrShaderFlag;
-    }
     void setTextureSamplerCnt(int cnt) {
         SkASSERT(cnt >= 0);
         fTextureSamplerCnt = cnt;
     }
 
-    /**
-     * Helper for implementing onTextureSampler(). E.g.:
-     * return IthTexureSampler(i, fMyFirstSampler, fMySecondSampler, fMyThirdSampler);
-     */
-    template <typename... Args>
-    static const TextureSampler& IthTextureSampler(int i, const TextureSampler& samp0,
-                                                   const Args&... samps) {
-        return (0 == i) ? samp0 : IthTextureSampler(i - 1, samps...);
-    }
-    inline static const TextureSampler& IthTextureSampler(int i);
-
 private:
-    virtual const TextureSampler& onTextureSampler(int) const { return IthTextureSampler(0); }
-
-    GrShaderFlags fShaders = kVertex_GrShaderFlag | kFragment_GrShaderFlag;
+    virtual const TextureSampler& onTextureSampler(int) const { SK_ABORT("no texture samplers"); }
 
     AttributeSet fVertexAttributes;
     AttributeSet fInstanceAttributes;
@@ -348,25 +342,10 @@ public:
                          const GrShaderCaps&,
                          const GrGeometryProcessor&) = 0;
 
-    // We use these methods as a temporary back door to inject OpenGL tessellation code. Once
-    // tessellation is supported by SkSL we can remove these.
-    virtual SkString getTessControlShaderGLSL(const GrGeometryProcessor&,
-                                              const char* versionAndExtensionDecls,
-                                              const GrGLSLUniformHandler&,
-                                              const GrShaderCaps&) const {
-        SK_ABORT("Not implemented.");
-    }
-    virtual SkString getTessEvaluationShaderGLSL(const GrGeometryProcessor&,
-                                                 const char* versionAndExtensionDecls,
-                                                 const GrGLSLUniformHandler&,
-                                                 const GrShaderCaps&) const {
-        SK_ABORT("Not implemented.");
-    }
-
     // GPs that use writeOutputPosition and/or writeLocalCoord must incorporate the matrix type
     // into their key, and should use this function or one of the other related helpers.
     static uint32_t ComputeMatrixKey(const GrShaderCaps& caps, const SkMatrix& mat) {
-        if (!caps.reducedShaderMode()) {
+        if (!caps.fReducedShaderMode) {
             if (mat.isIdentity()) {
                 return 0b00;
             }
@@ -485,6 +464,9 @@ private:
     // node that shares the same coordinates. This allows multiple FPs in a subtree to share a
     // varying.
     std::unordered_map<const GrFragmentProcessor*, TransformInfo> fTransformVaryingsMap;
+
+    // Move back into collectTransforms when /std=c++20 can be used with msvc.
+    enum class BaseCoord { kNone, kLocal, kPosition };
 };
 
 ///////////////////////////////////////////////////////////////////////////
@@ -504,6 +486,9 @@ public:
     TextureSampler(const TextureSampler&) = delete;
     TextureSampler& operator=(const TextureSampler&) = delete;
 
+    TextureSampler(TextureSampler&&) = default;
+    TextureSampler& operator=(TextureSampler&&) = default;
+
     void reset(GrSamplerState, const GrBackendFormat&, const skgpu::Swizzle&);
 
     const GrBackendFormat& backendFormat() const { return fBackendFormat; }
@@ -520,12 +505,6 @@ private:
     skgpu::Swizzle  fSwizzle;
     bool            fIsInitialized = false;
 };
-
-const GrGeometryProcessor::TextureSampler& GrGeometryProcessor::IthTextureSampler(int i) {
-    SK_ABORT("Illegal texture sampler index");
-    static const TextureSampler kBogus;
-    return kBogus;
-}
 
 //////////////////////////////////////////////////////////////////////////////
 

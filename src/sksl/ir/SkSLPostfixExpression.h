@@ -8,22 +8,30 @@
 #ifndef SKSL_POSTFIXEXPRESSION
 #define SKSL_POSTFIXEXPRESSION
 
-#include "include/sksl/SkSLOperator.h"
+#include "src/sksl/SkSLOperator.h"
+#include "src/sksl/SkSLPosition.h"
 #include "src/sksl/ir/SkSLExpression.h"
+#include "src/sksl/ir/SkSLIRNode.h"
+
+#include <memory>
+#include <string>
+#include <utility>
 
 namespace SkSL {
+
+class Context;
 
 /**
  * An expression modified by a unary operator appearing after it, such as 'i++'.
  */
 class PostfixExpression final : public Expression {
 public:
-    inline static constexpr Kind kExpressionKind = Kind::kPostfix;
+    inline static constexpr Kind kIRNodeKind = Kind::kPostfix;
 
     PostfixExpression(Position pos, std::unique_ptr<Expression> operand, Operator op)
-        : INHERITED(pos, kExpressionKind, &operand->type())
-        , fOperand(std::move(operand))
-        , fOperator(op) {}
+            : INHERITED(pos, kIRNodeKind, &operand->type())
+            , fOperand(std::move(operand))
+            , fOperator(op) {}
 
     // Creates an SkSL postfix expression; uses the ErrorReporter to report errors.
     static std::unique_ptr<Expression> Convert(const Context& context,
@@ -49,19 +57,12 @@ public:
         return fOperand;
     }
 
-    bool hasProperty(Property property) const override {
-        return (property == Property::kSideEffects) ||
-               this->operand()->hasProperty(property);
+    std::unique_ptr<Expression> clone(Position pos) const override {
+        return std::make_unique<PostfixExpression>(pos, this->operand()->clone(),
+                                                   this->getOperator());
     }
 
-    std::unique_ptr<Expression> clone() const override {
-        return std::make_unique<PostfixExpression>(fPosition, this->operand()->clone(),
-                this->getOperator());
-    }
-
-    std::string description() const override {
-        return this->operand()->description() + this->getOperator().operatorName();
-    }
+    std::string description(OperatorPrecedence parentPrecedence) const override;
 
 private:
     std::unique_ptr<Expression> fOperand;

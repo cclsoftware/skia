@@ -4,11 +4,12 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
+#include "src/gpu/ganesh/mtl/GrMtlTextureRenderTarget.h"
 
+#include "include/gpu/ganesh/mtl/GrMtlBackendSurface.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
 #include "src/gpu/ganesh/GrResourceProvider.h"
 #include "src/gpu/ganesh/mtl/GrMtlGpu.h"
-#include "src/gpu/ganesh/mtl/GrMtlTextureRenderTarget.h"
 #include "src/gpu/ganesh/mtl/GrMtlUtil.h"
 
 #if !__has_feature(objc_arc)
@@ -18,7 +19,7 @@
 GR_NORETAIN_BEGIN
 
 GrMtlTextureRenderTarget::GrMtlTextureRenderTarget(GrMtlGpu* gpu,
-                                                   SkBudgeted budgeted,
+                                                   skgpu::Budgeted budgeted,
                                                    SkISize dimensions,
                                                    sk_sp<GrMtlAttachment> texture,
                                                    sk_sp<GrMtlAttachment> colorAttachment,
@@ -52,9 +53,12 @@ bool create_rt_attachments(GrMtlGpu* gpu, SkISize dimensions, MTLPixelFormat for
                            sk_sp<GrMtlAttachment>* resolveAttachment) {
     if (sampleCnt > 1) {
         auto rp = gpu->getContext()->priv().resourceProvider();
-        sk_sp<GrAttachment> msaaAttachment = rp->makeMSAAAttachment(
-                dimensions, GrBackendFormat::MakeMtl(format), sampleCnt, GrProtected::kNo,
-                GrMemoryless::kNo);
+        sk_sp<GrAttachment> msaaAttachment =
+                rp->makeMSAAAttachment(dimensions,
+                                       GrBackendFormats::MakeMtl(format),
+                                       sampleCnt,
+                                       GrProtected::kNo,
+                                       GrMemoryless::kNo);
         if (!msaaAttachment) {
             return false;
         }
@@ -69,19 +73,20 @@ bool create_rt_attachments(GrMtlGpu* gpu, SkISize dimensions, MTLPixelFormat for
 
 sk_sp<GrMtlTextureRenderTarget> GrMtlTextureRenderTarget::MakeNewTextureRenderTarget(
         GrMtlGpu* gpu,
-        SkBudgeted budgeted,
+        skgpu::Budgeted budgeted,
         SkISize dimensions,
         int sampleCnt,
         MTLPixelFormat format,
         uint32_t mipLevels,
-        GrMipmapStatus mipmapStatus) {
+        GrMipmapStatus mipmapStatus,
+        std::string_view label) {
     sk_sp<GrMtlAttachment> textureAttachment =
             GrMtlAttachment::MakeTexture(gpu, dimensions, format, mipLevels, GrRenderable::kYes,
                                          /*numSamples=*/1, budgeted);
     if (!textureAttachment) {
         return nullptr;
     }
-    if (@available(macOS 10.11, iOS 9.0, *)) {
+    if (@available(macOS 10.11, iOS 9.0, tvOS 9.0, *)) {
         SkASSERT((MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget) &
                  textureAttachment->mtlTexture().usage);
     }
@@ -97,7 +102,7 @@ sk_sp<GrMtlTextureRenderTarget> GrMtlTextureRenderTarget::MakeNewTextureRenderTa
 
     return sk_sp<GrMtlTextureRenderTarget>(new GrMtlTextureRenderTarget(
             gpu, budgeted, dimensions, std::move(textureAttachment), std::move(colorAttachment),
-            std::move(resolveAttachment), mipmapStatus, /*label=*/{}));
+            std::move(resolveAttachment), mipmapStatus, label));
 }
 
 sk_sp<GrMtlTextureRenderTarget> GrMtlTextureRenderTarget::MakeWrappedTextureRenderTarget(
@@ -107,7 +112,7 @@ sk_sp<GrMtlTextureRenderTarget> GrMtlTextureRenderTarget::MakeWrappedTextureRend
         id<MTLTexture> texture,
         GrWrapCacheable cacheable) {
     SkASSERT(nil != texture);
-    if (@available(macOS 10.11, iOS 9.0, *)) {
+    if (@available(macOS 10.11, iOS 9.0, tvOS 9.0, *)) {
         SkASSERT((MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget) & texture.usage);
     }
     GrMipmapStatus mipmapStatus = texture.mipmapLevelCount > 1
@@ -116,7 +121,8 @@ sk_sp<GrMtlTextureRenderTarget> GrMtlTextureRenderTarget::MakeWrappedTextureRend
     GrAttachment::UsageFlags textureUsageFlags = GrAttachment::UsageFlags::kTexture |
                                                  GrAttachment::UsageFlags::kColorAttachment;
     sk_sp<GrMtlAttachment> textureAttachment =
-            GrMtlAttachment::MakeWrapped(gpu, dimensions, texture, textureUsageFlags, cacheable);
+            GrMtlAttachment::MakeWrapped(gpu, dimensions, texture, textureUsageFlags, cacheable,
+                                         /*label=*/"MtlAttachment_TextureAttachment");
     if (!textureAttachment) {
         return nullptr;
     }
@@ -132,7 +138,8 @@ sk_sp<GrMtlTextureRenderTarget> GrMtlTextureRenderTarget::MakeWrappedTextureRend
 
     return sk_sp<GrMtlTextureRenderTarget>(new GrMtlTextureRenderTarget(
             gpu, dimensions, std::move(textureAttachment), std::move(colorAttachment),
-            std::move(resolveAttachment), mipmapStatus, cacheable, /*label=*/{}));
+            std::move(resolveAttachment), mipmapStatus, cacheable,
+                      /*label=*/"MtlWrappedTextureRenderTarget"));
 }
 
 size_t GrMtlTextureRenderTarget::onGpuMemorySize() const {
@@ -151,12 +158,19 @@ size_t GrMtlTextureRenderTarget::onGpuMemorySize() const {
     if (this->numSamples() > 1) {
         // Msaa attachment should have a valid size
         SkASSERT(this->colorAttachment()->gpuMemorySize() ==
-                 GrSurface::ComputeSize(this->backendFormat(), this->dimensions(),
-                                        this->numSamples(), GrMipmapped::kNo));
+                 GrSurface::ComputeSize(this->backendFormat(),
+                                        this->dimensions(),
+                                        this->numSamples(),
+                                        skgpu::Mipmapped::kNo));
     }
 #endif
     return GrSurface::ComputeSize(this->backendFormat(), this->dimensions(),
                                   1 /*colorSamplesPerPixel*/, this->mipmapped());
+}
+
+void GrMtlTextureRenderTarget::onSetLabel() {
+    GrMtlRenderTarget::onSetLabel();
+    GrMtlTexture::onSetLabel();
 }
 
 GR_NORETAIN_END

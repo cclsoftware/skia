@@ -4,21 +4,71 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/ops/ShadowRRectOp.h"
 
 #include "include/core/SkBitmap.h"
-#include "include/gpu/GrRecordingContext.h"
+#include "include/core/SkImageInfo.h"
+#include "include/core/SkMatrix.h"
+#include "include/core/SkRRect.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkRefCnt.h"
+#include "include/core/SkString.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/private/SkColorData.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/base/SkPoint_impl.h"
+#include "include/private/base/SkTArray.h"
+#include "include/private/base/SkTo.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
 #include "src/core/SkRRectPriv.h"
-#include "src/gpu/ganesh/GrMemoryPool.h"
+#include "src/gpu/ResourceKey.h"
+#include "src/gpu/ganesh/GrAppliedClip.h"
+#include "src/gpu/ganesh/GrBuffer.h"
+#include "src/gpu/ganesh/GrGeometryProcessor.h"
+#include "src/gpu/ganesh/GrMeshDrawTarget.h"
 #include "src/gpu/ganesh/GrOpFlushState.h"
+#include "src/gpu/ganesh/GrPaint.h"
+#include "src/gpu/ganesh/GrPipeline.h"
+#include "src/gpu/ganesh/GrProcessorSet.h"
 #include "src/gpu/ganesh/GrProgramInfo.h"
-#include "src/gpu/ganesh/GrProxyProvider.h"
 #include "src/gpu/ganesh/GrRecordingContextPriv.h"
+#include "src/gpu/ganesh/GrSimpleMesh.h"
+#include "src/gpu/ganesh/GrSurfaceProxyView.h"
 #include "src/gpu/ganesh/GrThreadSafeCache.h"
+#include "src/gpu/ganesh/GrUserStencilSettings.h"
 #include "src/gpu/ganesh/SkGr.h"
 #include "src/gpu/ganesh/effects/GrShadowGeoProc.h"
+#include "src/gpu/ganesh/ops/GrMeshDrawOp.h"
 #include "src/gpu/ganesh/ops/GrSimpleMeshDrawOpHelper.h"
+
+#if defined(GPU_TEST_UTILS)
+#include "src/base/SkRandom.h"
+#include "src/gpu/ganesh/GrDrawOpTest.h"
+#include "src/gpu/ganesh/GrTestUtils.h"
+#endif
+
+#include <algorithm>
+#include <array>
+#include <climits>
+#include <cstddef>
+#include <cstdint>
+#include <tuple>
+#include <utility>
+
+class GrCaps;
+class GrDstProxyView;
+class SkArenaAlloc;
+enum class GrXferBarrierFlags;
+namespace skgpu {
+enum class Mipmapped : bool;
+}
+namespace skgpu::ganesh {
+class SurfaceDrawContext;
+}
+
+using namespace skia_private;
 
 namespace {
 
@@ -53,8 +103,8 @@ static const uint16_t gStrokeCircleIndices[] = {
         // clang-format on
 };
 
-static const int kIndicesPerFillCircle = SK_ARRAY_COUNT(gFillCircleIndices);
-static const int kIndicesPerStrokeCircle = SK_ARRAY_COUNT(gStrokeCircleIndices);
+static const int kIndicesPerFillCircle = std::size(gFillCircleIndices);
+static const int kIndicesPerStrokeCircle = std::size(gStrokeCircleIndices);
 static const int kVertsPerStrokeCircle = 16;
 static const int kVertsPerFillCircle = 9;
 
@@ -137,7 +187,7 @@ static const uint16_t gRRectIndices[] = {
 };
 
 // overstroke count
-static const int kIndicesPerOverstrokeRRect = SK_ARRAY_COUNT(gRRectIndices) - 6;
+static const int kIndicesPerOverstrokeRRect = std::size(gRRectIndices) - 6;
 // simple stroke count skips overstroke indices
 static const int kIndicesPerStrokeRRect = kIndicesPerOverstrokeRRect - 6*4;
 // fill count adds final quad to stroke count
@@ -550,7 +600,7 @@ private:
     }
 
     void onPrepareDraws(GrMeshDrawTarget* target) override {
-        int instanceCount = fGeoData.count();
+        int instanceCount = fGeoData.size();
 
         sk_sp<const GrBuffer> vertexBuffer;
         int firstVertex;
@@ -599,7 +649,8 @@ private:
         }
 
         fMesh = target->allocMesh();
-        fMesh->setIndexed(std::move(indexBuffer), fIndexCount, firstIndex, 0, fVertCount - 1,
+        fMesh->setIndexed(std::move(indexBuffer), fIndexCount, firstIndex, 0,
+                          SkTo<uint16_t>(fVertCount - 1),
                           GrPrimitiveRestart::kNo, std::move(vertexBuffer), firstVertex);
     }
 
@@ -620,16 +671,25 @@ private:
 
     CombineResult onCombineIfPossible(GrOp* t, SkArenaAlloc*, const GrCaps& caps) override {
         ShadowCircularRRectOp* that = t->cast<ShadowCircularRRectOp>();
-        fGeoData.push_back_n(that->fGeoData.count(), that->fGeoData.begin());
+
+        // Cannot combine if the net number of indices would overflow int32, or if the net number
+        // of vertices would overflow uint16 (since the index values are 16-bit that point into
+        // the vertex buffer).
+        if ((fIndexCount > INT32_MAX - that->fIndexCount) ||
+            (fVertCount > SkToInt(UINT16_MAX) - that->fVertCount)) {
+            return CombineResult::kCannotCombine;
+        }
+
+        fGeoData.push_back_n(that->fGeoData.size(), that->fGeoData.begin());
         fVertCount += that->fVertCount;
         fIndexCount += that->fIndexCount;
         return CombineResult::kMerged;
     }
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
     SkString onDumpInfo() const override {
         SkString string;
-        for (int i = 0; i < fGeoData.count(); ++i) {
+        for (int i = 0; i < fGeoData.size(); ++i) {
             string.appendf(
                     "Color: 0x%08x Rect [L: %.2f, T: %.2f, R: %.2f, B: %.2f],"
                     "OuterRad: %.2f, Umbra: %.2f, InnerRad: %.2f, BlurRad: %.2f\n",
@@ -643,13 +703,13 @@ private:
 #endif
 
     void visitProxies(const GrVisitProxyFunc& func) const override {
-        func(fFalloffView.proxy(), GrMipmapped(false));
+        func(fFalloffView.proxy(), skgpu::Mipmapped(false));
         if (fProgramInfo) {
             fProgramInfo->visitFPProxies(func);
         }
     }
 
-    SkSTArray<1, Geometry, true> fGeoData;
+    STArray<1, Geometry, true> fGeoData;
     int fVertCount;
     int fIndexCount;
     GrSurfaceProxyView fFalloffView;
@@ -664,7 +724,7 @@ private:
 
 ///////////////////////////////////////////////////////////////////////////////
 
-namespace skgpu::v1::ShadowRRectOp {
+namespace skgpu::ganesh::ShadowRRectOp {
 
 static GrSurfaceProxyView create_falloff_texture(GrRecordingContext* rContext) {
     static const skgpu::UniqueKey::Domain kDomain = skgpu::UniqueKey::GenerateDomain();
@@ -743,13 +803,11 @@ GrOp::Owner Make(GrRecordingContext* context,
                                              std::move(falloffView));
 }
 
-}  // namespace skgpu::v1::ShadowRRectOp
+}  // namespace skgpu::ganesh::ShadowRRectOp
 
 ///////////////////////////////////////////////////////////////////////////////
 
-#if GR_TEST_UTILS
-
-#include "src/gpu/ganesh/GrDrawOpTest.h"
+#if defined(GPU_TEST_UTILS)
 
 GR_DRAW_OP_TEST_DEFINE(ShadowRRectOp) {
     // We may choose matrix and inset values that cause the factory to fail. We loop until we find
@@ -772,8 +830,8 @@ GR_DRAW_OP_TEST_DEFINE(ShadowRRectOp) {
         if (isCircle) {
             SkRect circle = GrTest::TestSquare(random);
             SkRRect rrect = SkRRect::MakeOval(circle);
-            if (auto op = skgpu::v1::ShadowRRectOp::Make(
-                    context, color, viewMatrix, rrect, blurWidth, insetWidth)) {
+            if (auto op = skgpu::ganesh::ShadowRRectOp::Make(
+                        context, color, viewMatrix, rrect, blurWidth, insetWidth)) {
                 return op;
             }
         } else {
@@ -782,12 +840,12 @@ GR_DRAW_OP_TEST_DEFINE(ShadowRRectOp) {
                 // This may return a rrect with elliptical corners, which will cause an assert.
                 rrect = GrTest::TestRRectSimple(random);
             } while (!SkRRectPriv::IsSimpleCircular(rrect));
-            if (auto op = skgpu::v1::ShadowRRectOp::Make(
-                    context, color, viewMatrix, rrect, blurWidth, insetWidth)) {
+            if (auto op = skgpu::ganesh::ShadowRRectOp::Make(
+                        context, color, viewMatrix, rrect, blurWidth, insetWidth)) {
                 return op;
             }
         }
     } while (true);
 }
 
-#endif // GR_TEST_UTILS
+#endif // defined(GPU_TEST_UTILS)

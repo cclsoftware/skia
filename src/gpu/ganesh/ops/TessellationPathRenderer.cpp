@@ -4,30 +4,46 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/ops/TessellationPathRenderer.h"
 
-#include "include/private/SkVx.h"
-#include "src/core/SkPathPriv.h"
+#include "include/core/SkMatrix.h"
+#include "include/core/SkPath.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkStrokeRec.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/base/SkMathPriv.h"
+#include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrClip.h"
-#include "src/gpu/ganesh/GrMemoryPool.h"
-#include "src/gpu/ganesh/GrRecordingContextPriv.h"
-#include "src/gpu/ganesh/GrVx.h"
+#include "src/gpu/ganesh/GrPaint.h"
+#include "src/gpu/ganesh/GrRenderTargetProxy.h"
+#include "src/gpu/ganesh/GrStyle.h"
+#include "src/gpu/ganesh/GrSurfaceProxy.h"
+#include "src/gpu/ganesh/GrUserStencilSettings.h"
+#include "src/gpu/ganesh/SurfaceDrawContext.h"
 #include "src/gpu/ganesh/effects/GrDisableColorXP.h"
 #include "src/gpu/ganesh/geometry/GrStyledShape.h"
+#include "src/gpu/ganesh/ops/FillPathFlags.h"
+#include "src/gpu/ganesh/ops/GrOp.h"
 #include "src/gpu/ganesh/ops/PathInnerTriangulateOp.h"
 #include "src/gpu/ganesh/ops/PathStencilCoverOp.h"
 #include "src/gpu/ganesh/ops/PathTessellateOp.h"
 #include "src/gpu/ganesh/ops/StrokeTessellateOp.h"
-#include "src/gpu/ganesh/v1/SurfaceDrawContext_v1.h"
 #include "src/gpu/tessellate/Tessellation.h"
 #include "src/gpu/tessellate/WangsFormula.h"
 
+#include <utility>
+
+class GrRecordingContext;
+class SkArenaAlloc;
+
 namespace {
+
+using namespace skgpu::tess;
 
 GrOp::Owner make_non_convex_fill_op(GrRecordingContext* rContext,
                                     SkArenaAlloc* arena,
-                                    skgpu::v1::FillPathFlags fillPathFlags,
+                                    skgpu::ganesh::FillPathFlags fillPathFlags,
                                     GrAAType aaType,
                                     const SkRect& drawBounds,
                                     const SkIRect& clipBounds,
@@ -35,6 +51,7 @@ GrOp::Owner make_non_convex_fill_op(GrRecordingContext* rContext,
                                     const SkPath& path,
                                     GrPaint&& paint) {
     SkASSERT(!path.isConvex() || path.isInverseFillType());
+#if !defined(SK_ENABLE_OPTIMIZE_SIZE)
     int numVerbs = path.countVerbs();
     if (numVerbs > 0 && !path.isInverseFillType()) {
         // Check if the path is large and/or simple enough that we can triangulate the inner fan
@@ -48,29 +65,73 @@ GrOp::Owner make_non_convex_fill_op(GrRecordingContext* rContext,
             constexpr static float kCpuWeight = 512;
             constexpr static float kMinNumPixelsToTriangulate = 256 * 256;
             if (cpuTessellationWork * kCpuWeight + kMinNumPixelsToTriangulate < gpuFragmentWork) {
-                return GrOp::Make<skgpu::v1::PathInnerTriangulateOp>(rContext,
-                                                                     viewMatrix,
-                                                                     path,
-                                                                     std::move(paint),
-                                                                     aaType,
-                                                                     fillPathFlags,
-                                                                     drawBounds);
+                return GrOp::Make<skgpu::ganesh::PathInnerTriangulateOp>(rContext,
+                                                                         viewMatrix,
+                                                                         path,
+                                                                         std::move(paint),
+                                                                         aaType,
+                                                                         fillPathFlags,
+                                                                         drawBounds);
             }
         } // we should be clipped out when the GrClip is analyzed, so just return the default op
     }
-    return GrOp::Make<skgpu::v1::PathStencilCoverOp>(rContext,
-                                                     arena,
-                                                     viewMatrix,
-                                                     path,
-                                                     std::move(paint),
-                                                     aaType,
-                                                     fillPathFlags,
-                                                     drawBounds);
+#endif
+
+    return GrOp::Make<skgpu::ganesh::PathStencilCoverOp>(
+            rContext, arena, viewMatrix, path, std::move(paint), aaType, fillPathFlags, drawBounds);
 }
 
 } // anonymous namespace
 
-namespace skgpu::v1 {
+namespace skgpu::ganesh {
+
+namespace {
+
+// `chopped_path` may be null, in which case no chopping actually happens. Returns true on success,
+// false on failure (chopping not allowed).
+bool ChopPathIfNecessary(const SkMatrix& viewMatrix,
+                         const GrStyledShape& shape,
+                         const SkIRect& clipConservativeBounds,
+                         const SkStrokeRec& stroke,
+                         SkPath* chopped_path) {
+    const SkRect pathDevBounds = viewMatrix.mapRect(shape.bounds());
+    float n4 = wangs_formula::worst_case_cubic_p4(tess::kPrecision,
+                                                  pathDevBounds.width(),
+                                                  pathDevBounds.height());
+    if (n4 > tess::kMaxSegmentsPerCurve_p4 && shape.segmentMask() != SkPath::kLine_SegmentMask) {
+        // The path is extremely large. Pre-chop its curves to keep the number of tessellation
+        // segments tractable. This will also flatten curves that fall completely outside the
+        // viewport.
+        SkRect viewport = SkRect::Make(clipConservativeBounds);
+        if (!shape.style().isSimpleFill()) {
+            // Outset the viewport to pad for the stroke width.
+            float inflationRadius;
+            if (stroke.isHairlineStyle()) {
+                // SkStrokeRec::getInflationRadius() doesn't handle hairlines robustly. Instead
+                // find the inflation of an equivalent stroke in device space with a width of 1.
+                inflationRadius = SkStrokeRec::GetInflationRadius(stroke.getJoin(),
+                                                                  stroke.getMiter(),
+                                                                  stroke.getCap(), 1);
+            } else {
+                inflationRadius = stroke.getInflationRadius() * viewMatrix.getMaxScale();
+            }
+            viewport.outset(inflationRadius, inflationRadius);
+        }
+        if (wangs_formula::worst_case_cubic(
+                     tess::kPrecision,
+                     viewport.width(),
+                     viewport.height()) > kMaxSegmentsPerCurve) {
+            return false;
+        }
+        if (chopped_path) {
+            *chopped_path = PreChopPathCurves(tess::kPrecision, *chopped_path, viewMatrix,
+                                              viewport);
+        }
+    }
+    return true;
+}
+
+} // anonymous namespace
 
 bool TessellationPathRenderer::IsSupported(const GrCaps& caps) {
     return !caps.avoidStencilBuffers() &&
@@ -119,6 +180,14 @@ PathRenderer::CanDrawPath TessellationPathRenderer::onCanDrawPath(
             return CanDrawPath::kNo;
         }
     }
+
+    // By passing in null for the chopped-path no chopping happens. Rather this returns whether
+    // chopping is possible.
+    if (!ChopPathIfNecessary(*args.fViewMatrix, shape, *args.fClipConservativeBounds,
+                             shape.style().strokeRec(), nullptr)) {
+        return CanDrawPath::kNo;
+    }
+
     return CanDrawPath::kYes;
 }
 
@@ -128,32 +197,10 @@ bool TessellationPathRenderer::onDrawPath(const DrawPathArgs& args) {
     SkPath path;
     args.fShape->asPath(&path);
 
-    const SkRect pathDevBounds = args.fViewMatrix->mapRect(args.fShape->bounds());
-    float n4 = wangs_formula::worst_case_cubic_pow4(kTessellationPrecision,
-                                                    pathDevBounds.width(),
-                                                    pathDevBounds.height());
-    if (n4 > pow4(kMaxTessellationSegmentsPerCurve)) {
-        // The path is extremely large. Pre-chop its curves to keep the number of tessellation
-        // segments tractable. This will also flatten curves that fall completely outside the
-        // viewport.
-        SkRect viewport = SkRect::Make(*args.fClipConservativeBounds);
-        if (!args.fShape->style().isSimpleFill()) {
-            // Outset the viewport to pad for the stroke width.
-            const SkStrokeRec& stroke = args.fShape->style().strokeRec();
-            float inflationRadius;
-            if (stroke.isHairlineStyle()) {
-                // SkStrokeRec::getInflationRadius() doesn't handle hairlines robustly. Instead
-                // find the inflation of an equivalent stroke in device space with a width of 1.
-                inflationRadius = SkStrokeRec::GetInflationRadius(stroke.getJoin(),
-                                                                  stroke.getMiter(),
-                                                                  stroke.getCap(), 1);
-            } else {
-                inflationRadius = stroke.getInflationRadius() * args.fViewMatrix->getMaxScale();
-            }
-            viewport.outset(inflationRadius, inflationRadius);
-        }
-        path = PreChopPathCurves(kTessellationPrecision, path, *args.fViewMatrix, viewport);
-    }
+    // onDrawPath() should only be called if ChopPathIfNecessary() succeeded.
+    SkAssertResult(ChopPathIfNecessary(*args.fViewMatrix, *args.fShape,
+                                       *args.fClipConservativeBounds,
+                                       args.fShape->style().strokeRec(), &path));
 
     // Handle strokes first.
     if (!args.fShape->style().isSimpleFill()) {
@@ -168,6 +215,7 @@ bool TessellationPathRenderer::onDrawPath(const DrawPathArgs& args) {
     }
 
     // Handle empty paths.
+    const SkRect pathDevBounds = args.fViewMatrix->mapRect(args.fShape->bounds());
     if (pathDevBounds.isEmpty()) {
         if (path.isInverseFillType()) {
             args.fSurfaceDrawContext->drawPaint(args.fClip, std::move(args.fPaint),
@@ -221,12 +269,12 @@ void TessellationPathRenderer::onStencilPath(const StencilPathArgs& args) {
     SkPath path;
     args.fShape->asPath(&path);
 
-    float n4 = wangs_formula::worst_case_cubic_pow4(kTessellationPrecision,
-                                                    pathDevBounds.width(),
-                                                    pathDevBounds.height());
-    if (n4 > pow4(kMaxTessellationSegmentsPerCurve)) {
+    float n4 = wangs_formula::worst_case_cubic_p4(tess::kPrecision,
+                                                  pathDevBounds.width(),
+                                                  pathDevBounds.height());
+    if (n4 > tess::kMaxSegmentsPerCurve_p4) {
         SkRect viewport = SkRect::Make(*args.fClipConservativeBounds);
-        path = PreChopPathCurves(kTessellationPrecision, path, *args.fViewMatrix, viewport);
+        path = PreChopPathCurves(tess::kPrecision, path, *args.fViewMatrix, viewport);
     }
 
     // Make sure to check 'path' for convexity since it may have been pre-chopped, not 'fShape'.
@@ -266,4 +314,4 @@ void TessellationPathRenderer::onStencilPath(const StencilPathArgs& args) {
     sdc->addDrawOp(args.fClip, std::move(op));
 }
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh

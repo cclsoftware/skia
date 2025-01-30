@@ -7,10 +7,16 @@
 
 #include "src/gpu/ganesh/GrAttachment.h"
 
+#include "include/gpu/GpuTypes.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkTo.h"
+#include "src/gpu/DataUtils.h"
+#include "src/gpu/ResourceKey.h"
 #include "src/gpu/ganesh/GrBackendUtils.h"
 #include "src/gpu/ganesh/GrCaps.h"
-#include "src/gpu/ganesh/GrDataUtils.h"
 #include "src/gpu/ganesh/GrGpu.h"
+
+enum class SkTextureCompressionType;
 
 size_t GrAttachment::onGpuMemorySize() const {
     // The GrTexture[RenderTarget] is built up by a bunch of attachments each of which are their
@@ -23,9 +29,9 @@ size_t GrAttachment::onGpuMemorySize() const {
     // the owned attachments will have no size and be uncached.
     if (!(fSupportedUsages & UsageFlags::kTexture) && fMemoryless == GrMemoryless::kNo) {
         GrBackendFormat format = this->backendFormat();
-        SkImage::CompressionType compression = GrBackendFormatToCompressionType(format);
+        SkTextureCompressionType compression = GrBackendFormatToCompressionType(format);
 
-        uint64_t size = GrNumBlocks(compression, this->dimensions());
+        uint64_t size = skgpu::NumCompressedBlocks(compression, this->dimensions());
         size *= GrBackendFormatBytesPerBlock(this->backendFormat());
         size *= this->numSamples();
         return size;
@@ -39,7 +45,7 @@ static void build_key(skgpu::ResourceKey::Builder* builder,
                       SkISize dimensions,
                       GrAttachment::UsageFlags requiredUsage,
                       int sampleCnt,
-                      GrMipmapped mipmapped,
+                      skgpu::Mipmapped mipmapped,
                       GrProtected isProtected,
                       GrMemoryless memoryless) {
     SkASSERT(!dimensions.isEmpty());
@@ -65,7 +71,7 @@ void GrAttachment::ComputeSharedAttachmentUniqueKey(const GrCaps& caps,
                                                     SkISize dimensions,
                                                     UsageFlags requiredUsage,
                                                     int sampleCnt,
-                                                    GrMipmapped mipmapped,
+                                                    skgpu::Mipmapped mipmapped,
                                                     GrProtected isProtected,
                                                     GrMemoryless memoryless,
                                                     skgpu::UniqueKey* key) {
@@ -81,7 +87,7 @@ void GrAttachment::ComputeScratchKey(const GrCaps& caps,
                                      SkISize dimensions,
                                      UsageFlags requiredUsage,
                                      int sampleCnt,
-                                     GrMipmapped mipmapped,
+                                     skgpu::Mipmapped mipmapped,
                                      GrProtected isProtected,
                                      GrMemoryless memoryless,
                                      skgpu::ScratchKey* key) {
@@ -93,7 +99,16 @@ void GrAttachment::ComputeScratchKey(const GrCaps& caps,
 }
 
 void GrAttachment::computeScratchKey(skgpu::ScratchKey* key) const {
-    if (!SkToBool(fSupportedUsages & UsageFlags::kStencilAttachment)) {
+    // We do don't cache GrAttachments as scratch resources when used for stencils or textures. For
+    // stencils we share/cache them with unique keys so that they can be shared. Textures are in a
+    // weird place on the Vulkan backend. Currently, GrVkTexture contains a GrAttachment (GrVkImage)
+    // that actually holds the VkImage. The GrVkTexture is cached as a scratch resource and is
+    // responsible for tracking the gpuMemorySize. Thus we set the size of the texture GrVkImage,
+    // above in onGpuMemorySize, to be zero. Therefore, we can't have the GrVkImage getting cached
+    // separately on its own in the GrResourceCache or we may grow forever adding them thinking they
+    // contatin a memory that's size 0 and never freeing the actual VkImages.
+    if (!SkToBool(fSupportedUsages & UsageFlags::kStencilAttachment) &&
+        !SkToBool(fSupportedUsages & UsageFlags::kTexture)) {
         auto isProtected = this->isProtected() ? GrProtected::kYes : GrProtected::kNo;
         ComputeScratchKey(*this->getGpu()->caps(),
                           this->backendFormat(),

@@ -8,20 +8,35 @@
 #ifndef AtlasPathRenderer_DEFINED
 #define AtlasPathRenderer_DEFINED
 
-#include "include/gpu/GrTypes.h"
-#include "include/private/SkTHash.h"
+#include "include/core/SkRefCnt.h"
+#include "include/private/base/SkTArray.h"
+#include "src/core/SkChecksum.h"
 #include "src/core/SkIPoint16.h"
-#include "src/gpu/ganesh/GrDynamicAtlas.h"
+#include "src/core/SkTHash.h"
 #include "src/gpu/ganesh/GrFragmentProcessor.h"
 #include "src/gpu/ganesh/GrOnFlushResourceProvider.h"
-#include "src/gpu/ganesh/v1/PathRenderer.h"
+#include "src/gpu/ganesh/PathRenderer.h"
+#include "src/gpu/ganesh/ops/AtlasRenderTask.h"
 
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <memory>
+
+class GrDirectContext;
 class GrOp;
 class GrRecordingContext;
+class GrStyledShape;
+class GrSurfaceProxy;
+class SkMatrix;
+class SkPath;
+enum class GrAAType : unsigned int;
+struct SkIRect;
+struct SkRect;
 
-namespace skgpu::v1 {
+namespace skgpu::ganesh {
 
-class AtlasRenderTask;
+class SurfaceDrawContext;
 
 // Draws paths by first rendering their coverage mask into an offscreen atlas.
 class AtlasPathRenderer final : public PathRenderer, public GrOnFlushCallbackObject {
@@ -42,7 +57,7 @@ public:
     // 128^2 total pixels if the surfaceDrawContext supports MSAA or DMSAA.)
     //
     // Also returns GrFPFailure() if the view matrix has perspective.
-    GrFPResult makeAtlasClipEffect(const skgpu::v1::SurfaceDrawContext*,
+    GrFPResult makeAtlasClipEffect(const skgpu::ganesh::SurfaceDrawContext*,
                                    const GrOp* opBeingClipped,
                                    std::unique_ptr<GrFragmentProcessor> inputFP,
                                    const SkIRect& drawBounds,
@@ -87,7 +102,7 @@ private:
 
     // Instantiates texture(s) for all atlases we've created since the last flush. Atlases that are
     // the same size will be instantiated with the same backing texture.
-    void preFlush(GrOnFlushResourceProvider*, SkSpan<const uint32_t> taskIDs) override;
+    bool preFlush(GrOnFlushResourceProvider*) override;
 
     float fAtlasMaxSize = 0;
     float fAtlasMaxPathWidth = 0;
@@ -95,7 +110,7 @@ private:
 
     // A collection of all atlases we've created and used since the last flush. We instantiate these
     // at flush time during preFlush().
-    SkSTArray<4, sk_sp<AtlasRenderTask>> fAtlasRenderTasks;
+    skia_private::STArray<4, sk_sp<AtlasRenderTask>> fAtlasRenderTasks;
 
     // This simple cache remembers the locations of cacheable path masks in the most recent atlas.
     // Its main motivation is for clip paths.
@@ -108,10 +123,13 @@ private:
         uint32_t fPathGenID;
         float fAffineMatrix[6];
         uint32_t fFillRule;
+
+        using Hash = SkForceDirectHash<AtlasPathKey>;
     };
-    SkTHashMap<AtlasPathKey, SkIPoint16> fAtlasPathCache;
+
+    skia_private::THashMap<AtlasPathKey, SkIPoint16, AtlasPathKey::Hash> fAtlasPathCache;
 };
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh
 
 #endif // GrAtlasPathRenderer_DEFINED

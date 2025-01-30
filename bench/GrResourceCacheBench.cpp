@@ -8,7 +8,7 @@
 #include "bench/Benchmark.h"
 
 #include "include/core/SkCanvas.h"
-#include "include/gpu/GrDirectContext.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
 #include "src/gpu/ganesh/GrGpu.h"
 #include "src/gpu/ganesh/GrGpuResource.h"
@@ -23,7 +23,7 @@ class BenchResource : public GrGpuResource {
 public:
     BenchResource(GrGpu* gpu, std::string_view label)
         : INHERITED(gpu, label) {
-        this->registerWithCache(SkBudgeted::kYes);
+        this->registerWithCache(skgpu::Budgeted::kYes);
     }
 
     static void ComputeKey(int i, int keyData32Count, skgpu::UniqueKey* key) {
@@ -36,6 +36,7 @@ public:
 
 private:
     size_t onGpuMemorySize() const override { return 100; }
+    void onSetLabel() override{}
     const char* getResourceType() const override { return "bench"; }
     using INHERITED = GrGpuResource;
 };
@@ -44,7 +45,7 @@ static void populate_cache(GrGpu* gpu, int resourceCount, int keyData32Count) {
     for (int i = 0; i < resourceCount; ++i) {
         skgpu::UniqueKey key;
         BenchResource::ComputeKey(i, keyData32Count, &key);
-        GrGpuResource* resource = new BenchResource(gpu, /*label=*/{});
+        GrGpuResource* resource = new BenchResource(gpu, /*label=*/"BenchResource");
         resource->resourcePriv().setUniqueKey(key);
         resource->unref();
     }
@@ -61,7 +62,7 @@ public:
     }
 
     bool isSuitableFor(Backend backend) override {
-        return backend == kNonRendering_Backend;
+        return backend == Backend::kNonRendering;
     }
 protected:
     const char* onGetName() override {
@@ -79,7 +80,7 @@ protected:
         GrResourceCache* cache = context->priv().getResourceCache();
 
         // Make sure the cache is empty.
-        cache->purgeUnlockedResources();
+        cache->purgeUnlockedResources(GrPurgeResourceOptions::kAllResources);
         SkASSERT(0 == cache->getResourceCount() && 0 == cache->getResourceBytes());
 
         GrGpu* gpu = context->priv().getGpu();
@@ -107,7 +108,7 @@ public:
     }
 
     bool isSuitableFor(Backend backend) override {
-        return backend == kNonRendering_Backend;
+        return backend == Backend::kNonRendering;
     }
 protected:
     const char* onGetName() override {
@@ -125,7 +126,7 @@ protected:
         GrResourceCache* cache = fContext->priv().getResourceCache();
 
         // Make sure the cache is empty.
-        cache->purgeUnlockedResources();
+        cache->purgeUnlockedResources(GrPurgeResourceOptions::kAllResources);
         SkASSERT(0 == cache->getResourceCount() && 0 == cache->getResourceBytes());
 
         GrGpu* gpu = fContext->priv().getGpu();

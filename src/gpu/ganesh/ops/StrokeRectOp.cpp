@@ -4,36 +4,81 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/ops/StrokeRectOp.h"
 
+#include "include/core/SkMatrix.h"
+#include "include/core/SkPaint.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkRefCnt.h"
+#include "include/core/SkScalar.h"
+#include "include/core/SkString.h"
 #include "include/core/SkStrokeRec.h"
-#include "include/utils/SkRandom.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
+#include "include/private/SkColorData.h"
+#include "include/private/base/SkAlignedStorage.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/base/SkOnce.h"
+#include "include/private/base/SkPoint_impl.h"
+#include "include/private/base/SkTArray.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/base/SkRandom.h"
 #include "src/core/SkMatrixPriv.h"
 #include "src/gpu/BufferWriter.h"
 #include "src/gpu/ResourceKey.h"
+#include "src/gpu/ganesh/GrAppliedClip.h"
+#include "src/gpu/ganesh/GrBuffer.h"
 #include "src/gpu/ganesh/GrCaps.h"
-#include "src/gpu/ganesh/GrColor.h"
 #include "src/gpu/ganesh/GrDefaultGeoProcFactory.h"
 #include "src/gpu/ganesh/GrDrawOpTest.h"
+#include "src/gpu/ganesh/GrGeometryProcessor.h"
+#include "src/gpu/ganesh/GrMeshDrawTarget.h"
 #include "src/gpu/ganesh/GrOpFlushState.h"
+#include "src/gpu/ganesh/GrPaint.h"
+#include "src/gpu/ganesh/GrProcessorAnalysis.h"
+#include "src/gpu/ganesh/GrProcessorSet.h"
 #include "src/gpu/ganesh/GrProgramInfo.h"
+#include "src/gpu/ganesh/GrRecordingContextPriv.h"
 #include "src/gpu/ganesh/GrResourceProvider.h"
+#include "src/gpu/ganesh/GrSimpleMesh.h"
+#include "src/gpu/ganesh/GrTestUtils.h"
 #include "src/gpu/ganesh/geometry/GrQuad.h"
 #include "src/gpu/ganesh/ops/FillRectOp.h"
 #include "src/gpu/ganesh/ops/GrMeshDrawOp.h"
 #include "src/gpu/ganesh/ops/GrSimpleMeshDrawOpHelper.h"
 
-namespace skgpu::v1::StrokeRectOp {
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+
+class GrDstProxyView;
+class GrGpuBuffer;
+class GrSurfaceProxyView;
+class SkArenaAlloc;
+enum class GrXferBarrierFlags;
+
+namespace skgpu::ganesh {
+class SurfaceDrawContext;
+}
+
+using namespace skia_private;
+
+namespace skgpu::ganesh::StrokeRectOp {
 
 namespace {
 
-// We support all hairlines, bevels, and miters, but not round joins. Also, check whether the miter
+// This emits line primitives for hairlines, so only support hairlines if allowed by caps. Otherwise
+// we support all hairlines, bevels, and miters, but not round joins. Also, check whether the miter
 // limit makes a miter join effectively beveled. If the miter is effectively beveled, it is only
 // supported when using an AA stroke.
-inline bool allowed_stroke(const SkStrokeRec& stroke, GrAA aa, bool* isMiter) {
+inline bool allowed_stroke(const GrCaps* caps, const SkStrokeRec& stroke, GrAA aa, bool* isMiter) {
     SkASSERT(stroke.getStyle() == SkStrokeRec::kStroke_Style ||
              stroke.getStyle() == SkStrokeRec::kHairline_Style);
+    if (caps->avoidLineDraws() && stroke.isHairlineStyle()) {
+        return false;
+    }
     // For hairlines, make bevel and round joins appear the same as mitered ones.
     if (!stroke.getWidth()) {
         *isMiter = true;
@@ -109,7 +154,7 @@ public:
                             const SkStrokeRec& stroke,
                             GrAAType aaType) {
         bool isMiter;
-        if (!allowed_stroke(stroke, GrAA::kNo, &isMiter)) {
+        if (!allowed_stroke(context->priv().caps(), stroke, GrAA::kNo, &isMiter)) {
             return nullptr;
         }
         Helper::InputFlags inputFlags = Helper::InputFlags::kNone;
@@ -248,7 +293,7 @@ private:
         flushState->drawMesh(*fMesh);
     }
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
     SkString onDumpInfo() const override {
         return SkStringPrintf("Color: 0x%08x, Rect [L: %.2f, T: %.2f, R: %.2f, B: %.2f], "
                               "StrokeWidth: %.2f\n%s",
@@ -445,7 +490,7 @@ public:
             return nullptr;
         }
         bool isMiter;
-        if (!allowed_stroke(stroke, GrAA::kYes, &isMiter)) {
+        if (!allowed_stroke(context->priv().caps(), stroke, GrAA::kYes, &isMiter)) {
             return nullptr;
         }
         RectInfo info;
@@ -527,7 +572,7 @@ private:
     void onPrepareDraws(GrMeshDrawTarget*) override;
     void onExecute(GrOpFlushState*, const SkRect& chainBounds) override;
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
     SkString onDumpInfo() const override {
         SkString string;
         for (const auto& info : fRects) {
@@ -573,7 +618,7 @@ private:
                                       bool usesMSAASurface) const;
 
     Helper         fHelper;
-    SkSTArray<1, RectInfo, true> fRects;
+    STArray<1, RectInfo, true> fRects;
     SkMatrix       fViewMatrix;
     GrSimpleMesh*  fMesh = nullptr;
     GrProgramInfo* fProgramInfo = nullptr;
@@ -629,7 +674,7 @@ void AAStrokeRectOp::onPrepareDraws(GrMeshDrawTarget* target) {
     int outerVertexNum = this->miterStroke() ? 4 : 8;
     int verticesPerInstance = (outerVertexNum + innerVertexNum) * 2;
     int indicesPerInstance = this->miterStroke() ? kMiterIndexCnt : kBevelIndexCnt;
-    int instanceCount = fRects.count();
+    int instanceCount = fRects.size();
     int maxQuads = this->miterStroke() ? kNumMiterRectsInIndexBuffer : kNumBevelRectsInIndexBuffer;
 
     sk_sp<const GrGpuBuffer> indexBuffer =
@@ -694,7 +739,7 @@ sk_sp<const GrGpuBuffer> AAStrokeRectOp::GetIndexBuffer(GrResourceProvider* reso
             3 + 8, 0 + 8, 4 + 8, 4 + 8, 7 + 8, 3 + 8,
         };
         // clang-format on
-        static_assert(SK_ARRAY_COUNT(gMiterIndices) == kMiterIndexCnt);
+        static_assert(std::size(gMiterIndices) == kMiterIndexCnt);
         SKGPU_DEFINE_STATIC_UNIQUE_KEY(gMiterIndexBufferKey);
         return resourceProvider->findOrCreatePatternedIndexBuffer(
                 gMiterIndices, kMiterIndexCnt, kNumMiterRectsInIndexBuffer, kMiterVertexCnt,
@@ -758,7 +803,7 @@ sk_sp<const GrGpuBuffer> AAStrokeRectOp::GetIndexBuffer(GrResourceProvider* reso
             3 + 16, 0 + 16, 4 + 16, 4 + 16, 7 + 16, 3 + 16,
         };
         // clang-format on
-        static_assert(SK_ARRAY_COUNT(gBevelIndices) == kBevelIndexCnt);
+        static_assert(std::size(gBevelIndices) == kBevelIndexCnt);
 
         SKGPU_DEFINE_STATIC_UNIQUE_KEY(gBevelIndexBufferKey);
         return resourceProvider->findOrCreatePatternedIndexBuffer(
@@ -788,7 +833,7 @@ GrOp::CombineResult AAStrokeRectOp::onCombineIfPossible(GrOp* t, SkArenaAlloc*, 
         return CombineResult::kCannotCombine;
     }
 
-    fRects.push_back_n(that->fRects.count(), that->fRects.begin());
+    fRects.push_back_n(that->fRects.size(), that->fRects.begin());
     fWideColor |= that->fWideColor;
     return CombineResult::kMerged;
 }
@@ -976,18 +1021,16 @@ GrOp::Owner MakeNested(GrRecordingContext* context,
         }
         DrawQuad quad{GrQuad::MakeFromRect(rects[0], viewMatrix), GrQuad(rects[0]),
                       GrQuadAAFlags::kAll};
-        return FillRectOp::Make(context, std::move(paint), GrAAType::kCoverage, &quad);
+        return ganesh::FillRectOp::Make(context, std::move(paint), GrAAType::kCoverage, &quad);
     }
 
     return AAStrokeRectOp::Make(context, std::move(paint), viewMatrix, devOutside,
                                 devInside, SkVector{dx, dy} * .5f);
 }
 
-} // namespace skgpu::v1::StrokeRectOp
+} // namespace skgpu::ganesh::StrokeRectOp
 
-#if GR_TEST_UTILS
-
-#include "src/gpu/ganesh/GrDrawOpTest.h"
+#if defined(GPU_TEST_UTILS)
 
 GR_DRAW_OP_TEST_DEFINE(NonAAStrokeRectOp) {
     SkMatrix viewMatrix = GrTest::TestMatrix(random);
@@ -1002,8 +1045,9 @@ GR_DRAW_OP_TEST_DEFINE(NonAAStrokeRectOp) {
     if (numSamples > 1) {
         aaType = random->nextBool() ? GrAAType::kMSAA : GrAAType::kNone;
     }
-    return skgpu::v1::StrokeRectOp::NonAAStrokeRectOp::Make(context, std::move(paint), viewMatrix,
-                                                            rect, strokeRec, aaType);
+    return skgpu::ganesh::StrokeRectOp::NonAAStrokeRectOp::Make(context, std::move(paint),
+                                                                viewMatrix, rect, strokeRec,
+                                                                aaType);
 }
 
 GR_DRAW_OP_TEST_DEFINE(AAStrokeRectOp) {
@@ -1020,8 +1064,8 @@ GR_DRAW_OP_TEST_DEFINE(AAStrokeRectOp) {
     rec.setStrokeParams(SkPaint::kButt_Cap,
                         miterStroke ? SkPaint::kMiter_Join : SkPaint::kBevel_Join, 1.f);
     SkMatrix matrix = GrTest::TestMatrixRectStaysRect(random);
-    return skgpu::v1::StrokeRectOp::AAStrokeRectOp::Make(context, std::move(paint), matrix, rect,
-                                                         rec);
+    return skgpu::ganesh::StrokeRectOp::AAStrokeRectOp::Make(context, std::move(paint), matrix,
+                                                             rect, rec);
 }
 
 #endif

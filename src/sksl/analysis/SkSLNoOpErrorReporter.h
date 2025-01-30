@@ -8,14 +8,14 @@
 #ifndef SkSLNoOpErrorReporter_DEFINED
 #define SkSLNoOpErrorReporter_DEFINED
 
-#include "include/sksl/SkSLErrorReporter.h"
+#include "src/sksl/SkSLErrorReporter.h"
+#include "src/sksl/SkSLPosition.h"
 
 namespace SkSL {
 
 // We can use a no-op error reporter to silently ignore errors.
 class NoOpErrorReporter : public ErrorReporter {
 public:
-    ~NoOpErrorReporter() override { this->reportPendingErrors({}); }
     void handleError(std::string_view, Position) override {}
 };
 

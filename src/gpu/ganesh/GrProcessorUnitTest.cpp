@@ -7,16 +7,22 @@
 
 #include "src/gpu/ganesh/GrProcessorUnitTest.h"
 
-#include <memory>
+#if defined(GPU_TEST_UTILS)
 
-#include "include/gpu/GrRecordingContext.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
+#include "include/private/SkColorData.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/base/SkArenaAlloc.h"
+#include "src/base/SkRandom.h"
 #include "src/gpu/ganesh/GrFragmentProcessor.h"
 #include "src/gpu/ganesh/GrRecordingContextPriv.h"
-#include "src/gpu/ganesh/GrSurfaceProxyView.h"
 
-#if GR_TEST_UTILS
+#include <cstdint>
+#include <memory>
+#include <utility>
 
-class GrGeometryProcessor;
+using namespace skia_private;
 
 GrProcessorTestData::GrProcessorTestData(SkRandom* random, GrRecordingContext* context,
                                          int maxTreeDepth, int numViews, const ViewInfo views[])
@@ -52,7 +58,7 @@ std::unique_ptr<GrFragmentProcessor> GrProcessorTestData::inputFP() {
 
 GrProcessorTestData::ViewInfo GrProcessorTestData::randomView() {
     SkASSERT(!fViews.empty());
-    return fViews[fRandom->nextULessThan(fViews.count())];
+    return fViews[fRandom->nextULessThan(fViews.size())];
 }
 
 GrProcessorTestData::ViewInfo GrProcessorTestData::randomAlphaOnlyView() {
@@ -82,17 +88,17 @@ GrProcessorTestFactory<ProcessorSmartPtr>::GrProcessorTestFactory(MakeProc makeP
 template <class ProcessorSmartPtr>
 ProcessorSmartPtr GrProcessorTestFactory<ProcessorSmartPtr>::Make(GrProcessorTestData* data) {
     VerifyFactoryCount();
-    if (GetFactories()->count() == 0) {
+    if (GetFactories()->size() == 0) {
         return nullptr;
     }
-    uint32_t idx = data->fRandom->nextULessThan(GetFactories()->count());
+    uint32_t idx = data->fRandom->nextULessThan(GetFactories()->size());
     return MakeIdx(idx, data);
 }
 
 template <class ProcessorSmartPtr>
 ProcessorSmartPtr GrProcessorTestFactory<ProcessorSmartPtr>::MakeIdx(int idx,
                                                                      GrProcessorTestData* data) {
-    SkASSERT(idx < GetFactories()->count());
+    SkASSERT(idx < GetFactories()->size());
     GrProcessorTestFactory<ProcessorSmartPtr>* factory = (*GetFactories())[idx];
     ProcessorSmartPtr processor = factory->fMakeProc(data);
     if (processor == nullptr) {
@@ -103,7 +109,7 @@ ProcessorSmartPtr GrProcessorTestFactory<ProcessorSmartPtr>::MakeIdx(int idx,
 
 template <class ProcessorSmartPtr>
 int GrProcessorTestFactory<ProcessorSmartPtr>::Count() {
-    return GetFactories()->count();
+    return GetFactories()->size();
 }
 
 GrXPFactoryTestFactory::GrXPFactoryTestFactory(GetFn* getProc) : fGetProc(getProc) {
@@ -112,10 +118,10 @@ GrXPFactoryTestFactory::GrXPFactoryTestFactory(GetFn* getProc) : fGetProc(getPro
 
 const GrXPFactory* GrXPFactoryTestFactory::Get(GrProcessorTestData* data) {
     VerifyFactoryCount();
-    if (GetFactories()->count() == 0) {
+    if (GetFactories()->size() == 0) {
         return nullptr;
     }
-    uint32_t idx = data->fRandom->nextRangeU(0, GetFactories()->count() - 1);
+    uint32_t idx = data->fRandom->nextRangeU(0, GetFactories()->size() - 1);
     const GrXPFactory* xpf = (*GetFactories())[idx]->fGetProc(data);
     SkASSERT(xpf);
     return xpf;
@@ -126,19 +132,19 @@ const GrXPFactory* GrXPFactoryTestFactory::Get(GrProcessorTestData* data) {
  * problems on android.
  */
 template <>
-SkTArray<GrFragmentProcessorTestFactory*, true>* GrFragmentProcessorTestFactory::GetFactories() {
-    static SkTArray<GrFragmentProcessorTestFactory*, true> gFactories;
+TArray<GrFragmentProcessorTestFactory*, true>* GrFragmentProcessorTestFactory::GetFactories() {
+    static TArray<GrFragmentProcessorTestFactory*, true> gFactories;
     return &gFactories;
 }
 
 template <>
-SkTArray<GrGeometryProcessorTestFactory*, true>* GrGeometryProcessorTestFactory::GetFactories() {
-    static SkTArray<GrGeometryProcessorTestFactory*, true> gFactories;
+TArray<GrGeometryProcessorTestFactory*, true>* GrGeometryProcessorTestFactory::GetFactories() {
+    static TArray<GrGeometryProcessorTestFactory*, true> gFactories;
     return &gFactories;
 }
 
-SkTArray<GrXPFactoryTestFactory*, true>* GrXPFactoryTestFactory::GetFactories() {
-    static SkTArray<GrXPFactoryTestFactory*, true> gFactories;
+TArray<GrXPFactoryTestFactory*, true>* GrXPFactoryTestFactory::GetFactories() {
+    static TArray<GrXPFactoryTestFactory*, true> gFactories;
     return &gFactories;
 }
 
@@ -147,30 +153,30 @@ SkTArray<GrXPFactoryTestFactory*, true>* GrXPFactoryTestFactory::GetFactories() 
  * we verify the count is as expected.  If a new factory is added, then these numbers must be
  * manually adjusted.
  */
-static constexpr int kFPFactoryCount = 16;
+static constexpr int kFPFactoryCount = 10;
 static constexpr int kGPFactoryCount = 14;
 static constexpr int kXPFactoryCount = 4;
 
 template <> void GrFragmentProcessorTestFactory::VerifyFactoryCount() {
-    if (kFPFactoryCount != GetFactories()->count()) {
+    if (kFPFactoryCount != GetFactories()->size()) {
         SkDebugf("\nExpected %d fragment processor factories, found %d.\n", kFPFactoryCount,
-                 GetFactories()->count());
+                 GetFactories()->size());
         SK_ABORT("Wrong number of fragment processor factories!");
     }
 }
 
 template <> void GrGeometryProcessorTestFactory::VerifyFactoryCount() {
-    if (kGPFactoryCount != GetFactories()->count()) {
+    if (kGPFactoryCount != GetFactories()->size()) {
         SkDebugf("\nExpected %d geometry processor factories, found %d.\n", kGPFactoryCount,
-                 GetFactories()->count());
+                 GetFactories()->size());
         SK_ABORT("Wrong number of geometry processor factories!");
     }
 }
 
 void GrXPFactoryTestFactory::VerifyFactoryCount() {
-    if (kXPFactoryCount != GetFactories()->count()) {
+    if (kXPFactoryCount != GetFactories()->size()) {
         SkDebugf("\nExpected %d xp factory factories, found %d.\n", kXPFactoryCount,
-                 GetFactories()->count());
+                 GetFactories()->size());
         SK_ABORT("Wrong number of xp factory factories!");
     }
 }

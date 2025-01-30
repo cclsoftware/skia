@@ -21,12 +21,17 @@
 #include "include/core/SkTextBlob.h"
 #include "include/core/SkTypeface.h"
 #include "include/core/SkTypes.h"
-#include "include/private/SkTDArray.h"
-#include "include/private/chromium/GrSlug.h"
+#include "include/private/base/SkTDArray.h"
+#include "include/private/chromium/Slug.h"
 #include "tools/ToolUtils.h"
+#include "tools/fonts/FontToolUtils.h"
 
-#if SK_SUPPORT_GPU
-#include "include/gpu/GrContextOptions.h"
+#if defined(SK_GRAPHITE)
+#include "include/gpu/graphite/ContextOptions.h"
+#endif
+
+#if defined(SK_GANESH) || defined(SK_GRAPHITE)
+#include "include/gpu/ganesh/GrContextOptions.h"
 
 class SlugGM : public skiagm::GM {
 public:
@@ -37,8 +42,14 @@ protected:
         ctxOptions->fSupportBilerpFromGlyphAtlas = true;
     }
 
+#if defined(SK_GRAPHITE)
+    void modifyGraphiteContextOptions(skgpu::graphite::ContextOptions* options) const override {
+        options->fSupportBilerpFromGlyphAtlas = true;
+    }
+#endif
+
     void onOnceBeforeDraw() override {
-        fTypeface = ToolUtils::create_portable_typeface("serif", SkFontStyle());
+        fTypeface = ToolUtils::CreatePortableTypeface("serif", SkFontStyle());
         SkFont font(fTypeface);
         size_t txtLen = strlen(fText);
         int glyphCount = font.countText(fText, txtLen, SkTextEncoding::kUTF8);
@@ -47,13 +58,9 @@ protected:
         font.textToGlyphs(fText, txtLen, SkTextEncoding::kUTF8, fGlyphs.begin(), glyphCount);
     }
 
-    SkString onShortName() override {
-        return SkString("slug");
-    }
+    SkString getName() const override { return SkString("slug"); }
 
-    SkISize onISize() override {
-        return SkISize::Make(1000, 480);
-    }
+    SkISize getISize() override { return SkISize::Make(1000, 480); }
 
     void onDraw(SkCanvas* canvas) override {
         sk_sp<SkTextBlob> blob(this->makeBlob());
@@ -61,7 +68,7 @@ protected:
         p.setAntiAlias(true);
         canvas->clipIRect(SkIRect::MakeSize(this->getISize()).makeInset(40, 50));
         canvas->scale(1.3f, 1.3f);
-        sk_sp<GrSlug> slug = GrSlug::ConvertBlob(canvas, *blob, {10, 10}, p);
+        sk_sp<sktext::gpu::Slug> slug = sktext::gpu::Slug::ConvertBlob(canvas, *blob, {10, 10}, p);
         if (slug == nullptr) {
             return;
         }
@@ -69,7 +76,7 @@ protected:
         canvas->translate(30, 30);
         canvas->drawTextBlob(blob, 10, 10, p);
         canvas->translate(370, 0);
-        slug->draw(canvas);
+        slug->draw(canvas, p);
         for (float scale = 1.5; scale < 4; scale += 0.5) {
             canvas->translate(-370, 20 * scale);
             canvas->save();
@@ -82,7 +89,7 @@ protected:
             canvas->scale(scale, scale);
             canvas->rotate(5);
 
-            slug->draw(canvas);
+            slug->draw(canvas, p);
             canvas->restore();
         }
     }
@@ -97,8 +104,8 @@ private:
         font.setTypeface(fTypeface);
         font.setSize(16);
 
-        const SkTextBlobBuilder::RunBuffer& buf = builder.allocRun(font, fGlyphs.count(), 0, 0);
-        memcpy(buf.glyphs, fGlyphs.begin(), fGlyphs.count() * sizeof(uint16_t));
+        const SkTextBlobBuilder::RunBuffer& buf = builder.allocRun(font, fGlyphs.size(), 0, 0);
+        memcpy(buf.glyphs, fGlyphs.begin(), fGlyphs.size() * sizeof(uint16_t));
         return builder.make();
     }
 

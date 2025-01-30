@@ -13,14 +13,20 @@
 #include "src/core/SkLRUCache.h"
 #include "src/gpu/ResourceKey.h"
 #include "src/gpu/graphite/CommandBuffer.h"
-#include "src/gpu/graphite/GraphicsPipelineDesc.h"
+#include "src/gpu/graphite/GraphicsPipeline.h"
+#include "src/gpu/graphite/ResourceCache.h"
 #include "src/gpu/graphite/ResourceTypes.h"
 
+struct AHardwareBuffer;
 struct SkSamplingOptions;
-class SkShaderCodeDictionary;
+class SkTraceMemoryDump;
 
 namespace skgpu {
 class SingleOwner;
+}
+
+namespace SkSL {
+    class Compiler;
 }
 
 namespace skgpu::graphite {
@@ -28,12 +34,16 @@ namespace skgpu::graphite {
 class BackendTexture;
 class Buffer;
 class Caps;
+class ComputePipeline;
+class ComputePipelineDesc;
 class GlobalCache;
-class Gpu;
-class GraphicsPipeline;
+class GraphicsPipelineDesc;
 class GraphiteResourceKey;
 class ResourceCache;
+class RuntimeEffectDictionary;
+class ShaderCodeDictionary;
 class Sampler;
+class SharedContext;
 class Texture;
 class TextureInfo;
 
@@ -41,13 +51,26 @@ class ResourceProvider {
 public:
     virtual ~ResourceProvider();
 
-    virtual sk_sp<CommandBuffer> createCommandBuffer() = 0;
+    // The runtime effect dictionary provides a link between SkCodeSnippetIds referenced in the
+    // paint key and the current SkRuntimeEffect that provides the SkSL for that id.
+    sk_sp<GraphicsPipeline> findOrCreateGraphicsPipeline(
+            const RuntimeEffectDictionary*,
+            const GraphicsPipelineDesc&,
+            const RenderPassDesc&,
+            SkEnumBitMask<PipelineCreationFlags> = PipelineCreationFlags::kNone);
 
-    sk_sp<GraphicsPipeline> findOrCreateGraphicsPipeline(const GraphicsPipelineDesc&,
-                                                         const RenderPassDesc&);
+    sk_sp<ComputePipeline> findOrCreateComputePipeline(const ComputePipelineDesc&);
 
-    sk_sp<Texture> findOrCreateScratchTexture(SkISize, const TextureInfo&);
-    virtual sk_sp<Texture> createWrappedTexture(const BackendTexture&) = 0;
+    sk_sp<Texture> findOrCreateNonShareableTexture(SkISize,
+                                                   const TextureInfo&,
+                                                   std::string_view label,
+                                                   Budgeted);
+    sk_sp<Texture> findOrCreateScratchTexture(SkISize,
+                                              const TextureInfo&,
+                                              std::string_view label,
+                                              const ResourceCache::ScratchResourceSet& unavailable);
+
+    sk_sp<Texture> createWrappedTexture(const BackendTexture&, std::string_view label);
 
     sk_sp<Texture> findOrCreateDepthStencilAttachment(SkISize dimensions,
                                                       const TextureInfo&);
@@ -55,61 +78,93 @@ public:
     sk_sp<Texture> findOrCreateDiscardableMSAAAttachment(SkISize dimensions,
                                                          const TextureInfo&);
 
-    sk_sp<Buffer> findOrCreateBuffer(size_t size, BufferType type, PrioritizeGpuReads);
+    sk_sp<Buffer> findOrCreateBuffer(size_t size,
+                                     BufferType type,
+                                     AccessPattern,
+                                     std::string_view label);
 
-    sk_sp<Sampler> findOrCreateCompatibleSampler(const SkSamplingOptions&,
-                                                 SkTileMode xTileMode,
-                                                 SkTileMode yTileMode);
+    sk_sp<Sampler> findOrCreateCompatibleSampler(const SamplerDesc&);
 
-    SkShaderCodeDictionary* shaderCodeDictionary() const;
+    BackendTexture createBackendTexture(SkISize dimensions, const TextureInfo&);
+    void deleteBackendTexture(const BackendTexture&);
+
+    ProxyCache* proxyCache() { return fResourceCache->proxyCache(); }
+
+    void setResourceCacheLimit(size_t bytes) { return fResourceCache->setMaxBudget(bytes); }
+    size_t getResourceCacheLimit() const { return fResourceCache->getMaxBudget(); }
+    size_t getResourceCacheCurrentBudgetedBytes() const {
+        return fResourceCache->currentBudgetedBytes();
+    }
+    size_t getResourceCacheCurrentPurgeableBytes() const {
+        return fResourceCache->currentPurgeableBytes();
+    }
+
+    void dumpMemoryStatistics(SkTraceMemoryDump* traceMemoryDump) const {
+        fResourceCache->dumpMemoryStatistics(traceMemoryDump);
+    }
+
+    void freeGpuResources();
+    void purgeResourcesNotUsedSince(StdSteadyClock::time_point purgeTime);
+    void forceProcessReturnedResources() { fResourceCache->forceProcessReturnedResources(); }
+
+#if defined(GPU_TEST_UTILS)
+    ResourceCache* resourceCache() { return fResourceCache.get(); }
+    const SharedContext* sharedContext() { return fSharedContext; }
+#endif
+
+#ifdef SK_BUILD_FOR_ANDROID
+    virtual BackendTexture createBackendTexture(AHardwareBuffer*,
+                                                bool isRenderable,
+                                                bool isProtectedContent,
+                                                SkISize dimensions,
+                                                bool fromAndroidWindow) const;
+#endif
 
 protected:
-    ResourceProvider(const Gpu* gpu, sk_sp<GlobalCache>, SingleOwner* singleOwner);
+    ResourceProvider(SharedContext* sharedContext,
+                     SingleOwner* singleOwner,
+                     uint32_t recorderID,
+                     size_t resourceBudget);
 
-    const Gpu* fGpu;
+    SharedContext* fSharedContext;
+    // Each ResourceProvider owns one local cache; for some resources it also refers out to the
+    // global cache of the SharedContext, which is assumed to outlive the ResourceProvider.
+    sk_sp<ResourceCache> fResourceCache;
 
 private:
-    virtual sk_sp<GraphicsPipeline> onCreateGraphicsPipeline(const GraphicsPipelineDesc&,
-                                                             const RenderPassDesc&) = 0;
+    virtual sk_sp<GraphicsPipeline> createGraphicsPipeline(
+            const RuntimeEffectDictionary*,
+            const UniqueKey&,
+            const GraphicsPipelineDesc&,
+            const RenderPassDesc&,
+            SkEnumBitMask<PipelineCreationFlags>,
+            uint32_t compilationID) = 0;
+    virtual sk_sp<ComputePipeline> createComputePipeline(const ComputePipelineDesc&) = 0;
     virtual sk_sp<Texture> createTexture(SkISize, const TextureInfo&) = 0;
-    virtual sk_sp<Buffer> createBuffer(size_t size, BufferType type, PrioritizeGpuReads) = 0;
+    virtual sk_sp<Buffer> createBuffer(size_t size, BufferType type, AccessPattern) = 0;
+    virtual sk_sp<Sampler> createSampler(const SamplerDesc&) = 0;
 
-    virtual sk_sp<Sampler> createSampler(const SkSamplingOptions&,
-                                         SkTileMode xTileMode,
-                                         SkTileMode yTileMode) = 0;
+    sk_sp<Texture> findOrCreateTexture(SkISize dimensions,
+                                       const TextureInfo& info,
+                                       std::string_view label,
+                                       Budgeted,
+                                       Shareable,
+                                       const ResourceCache::ScratchResourceSet* = nullptr);
 
-    sk_sp<Texture> findOrCreateTextureWithKey(SkISize dimensions,
-                                              const TextureInfo& info,
-                                              const GraphiteResourceKey& key);
+    virtual sk_sp<Texture> onCreateWrappedTexture(const BackendTexture&) = 0;
 
-    class GraphicsPipelineCache {
-    public:
-        GraphicsPipelineCache(ResourceProvider* resourceProvider);
-        ~GraphicsPipelineCache();
+    virtual BackendTexture onCreateBackendTexture(SkISize dimensions, const TextureInfo&) = 0;
+#ifdef SK_BUILD_FOR_ANDROID
+    virtual BackendTexture onCreateBackendTexture(AHardwareBuffer*,
+                                                  bool isRenderable,
+                                                  bool isProtectedContent,
+                                                  SkISize dimensions,
+                                                  bool fromAndroidWindow) const;
+#endif
+    virtual void onDeleteBackendTexture(const BackendTexture&) = 0;
 
-        void release();
-        sk_sp<GraphicsPipeline> refPipeline(const Caps* caps,
-                                            const GraphicsPipelineDesc&,
-                                            const RenderPassDesc&);
-
-    private:
-        struct Entry;
-        struct KeyHash {
-            uint32_t operator()(const UniqueKey& key) const {
-                return key.hash();
-            }
-        };
-        SkLRUCache<UniqueKey, std::unique_ptr<Entry>, KeyHash> fMap;
-
-        ResourceProvider* fResourceProvider;
-    };
-
-    sk_sp<ResourceCache> fResourceCache;
-    sk_sp<GlobalCache> fGlobalCache;
-
-    // Cache of GraphicsPipelines
-    // TODO: Move this onto GlobalCache
-    std::unique_ptr<GraphicsPipelineCache> fGraphicsPipelineCache;
+    virtual void onFreeGpuResources() {}
+    virtual void onPurgeResourcesNotUsedSince(StdSteadyClock::time_point purgeTime) {}
 };
 
 } // namespace skgpu::graphite

@@ -8,14 +8,44 @@
 #ifndef PathInnerTriangulateOp_DEFINED
 #define PathInnerTriangulateOp_DEFINED
 
-#include "src/gpu/ganesh/geometry/GrInnerFanTriangulator.h"
-#include "src/gpu/ganesh/ops/FillPathFlags.h"
-#include "src/gpu/ganesh/ops/GrDrawOp.h"
-#include "src/gpu/ganesh/tessellate/shaders/GrTessellationShader.h"
+#include "include/core/SkTypes.h"
 
-namespace skgpu::v1 {
+#if !defined(SK_ENABLE_OPTIMIZE_SIZE)
+
+#include "include/core/SkMatrix.h"
+#include "include/core/SkPath.h"
+#include "include/core/SkRefCnt.h"
+#include "include/private/SkColorData.h"
+#include "include/private/base/SkTArray.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/ganesh/GrBuffer.h"
+#include "src/gpu/ganesh/GrCaps.h"
+#include "src/gpu/ganesh/GrGpuBuffer.h"
+#include "src/gpu/ganesh/GrPaint.h"
+#include "src/gpu/ganesh/GrProcessorSet.h"
+#include "src/gpu/ganesh/geometry/GrInnerFanTriangulator.h"
+#include "src/gpu/ganesh/geometry/GrTriangulator.h"
+#include "src/gpu/ganesh/ops/GrDrawOp.h"
+#include "src/gpu/ganesh/ops/GrOp.h"
+#include "src/gpu/ganesh/tessellate/GrTessellationShader.h"
+
+#include <utility>
+
+class GrAppliedClip;
+class GrDstProxyView;
+class GrOpFlushState;
+class GrPipeline;
+class GrProgramInfo;
+class GrRecordingContext;
+class GrSurfaceProxyView;
+enum class GrXferBarrierFlags;
+struct GrUserStencilSettings;
+struct SkRect;
+
+namespace skgpu::ganesh {
 
 class PathCurveTessellator;
+enum class FillPathFlags;
 
 // This op is a 3-pass twist on the standard Redbook "stencil then cover" algorithm:
 //
@@ -85,7 +115,7 @@ private:
 
     // Pass 2: Fill the path's inner fan with a stencil test against the curves. (In extenuating
     // circumstances this might require two separate draws.)
-    SkSTArray<2, const GrProgramInfo*> fFanPrograms;
+    skia_private::STArray<2, const GrProgramInfo*> fFanPrograms;
 
     // Pass 3: Draw convex hulls around each curve.
     const GrProgramInfo* fCoverHullsProgram = nullptr;
@@ -101,6 +131,8 @@ private:
     friend class GrOp;  // For ctor.
 };
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh
+
+#endif // SK_ENABLE_OPTIMIZE_SIZE
 
 #endif // PathInnerTriangulateOp_DEFINED

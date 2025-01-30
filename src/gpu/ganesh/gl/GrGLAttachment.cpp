@@ -7,8 +7,17 @@
 
 #include "src/gpu/ganesh/gl/GrGLAttachment.h"
 
+#include "include/core/SkString.h"
 #include "include/core/SkTraceMemoryDump.h"
+#include "include/gpu/ganesh/gl/GrGLBackendSurface.h"
+#include "include/gpu/ganesh/gl/GrGLFunctions.h"
+#include "include/gpu/ganesh/gl/GrGLInterface.h"
+#include "src/gpu/ganesh/gl/GrGLCaps.h"
+#include "src/gpu/ganesh/gl/GrGLDefines.h"
 #include "src/gpu/ganesh/gl/GrGLGpu.h"
+#include "src/gpu/ganesh/gl/GrGLUtil.h"
+
+#include <string>
 
 #define GL_CALL(X) GR_GL_CALL(gpu->glInterface(), X)
 
@@ -47,7 +56,6 @@ static bool renderbuffer_storage_msaa(GrGLGpu* gpu,
             break;
         case GrGLCaps::kNone_MSFBOType:
             SkUNREACHABLE;
-            break;
     }
     return error == GR_GL_NO_ERROR;
 }
@@ -87,7 +95,7 @@ sk_sp<GrGLAttachment> GrGLAttachment::MakeStencil(GrGLGpu* gpu,
                                                     GrAttachment::UsageFlags::kStencilAttachment,
                                                     sampleCnt,
                                                     format,
-                                                    /*label=*/{}));
+                                                    /*label=*/"GLAttachmentMakeStencil"));
 }
 
 sk_sp<GrGLAttachment> GrGLAttachment::MakeMSAA(GrGLGpu* gpu,
@@ -114,7 +122,7 @@ sk_sp<GrGLAttachment> GrGLAttachment::MakeMSAA(GrGLGpu* gpu,
                                                     GrAttachment::UsageFlags::kColorAttachment,
                                                     sampleCnt,
                                                     format,
-                                                    /*label=*/{}));
+                                                    /*label=*/"GLAttachmentMakeMSAA"));
 }
 
 
@@ -136,7 +144,7 @@ void GrGLAttachment::onAbandon() {
 }
 
 GrBackendFormat GrGLAttachment::backendFormat() const {
-    return GrBackendFormat::MakeGL(GrGLFormatToEnum(fFormat), GR_GL_TEXTURE_NONE);
+    return GrBackendFormats::MakeGL(GrGLFormatToEnum(fFormat), GR_GL_TEXTURE_NONE);
 }
 
 void GrGLAttachment::setMemoryBacking(SkTraceMemoryDump* traceMemoryDump,
@@ -144,4 +152,16 @@ void GrGLAttachment::setMemoryBacking(SkTraceMemoryDump* traceMemoryDump,
     SkString renderbuffer_id;
     renderbuffer_id.appendU32(this->renderbufferID());
     traceMemoryDump->setMemoryBacking(dumpName.c_str(), "gl_renderbuffer", renderbuffer_id.c_str());
+}
+
+void GrGLAttachment::onSetLabel() {
+    SkASSERT(fRenderbufferID);
+    if (!this->getLabel().empty()) {
+        const std::string label = "_Skia_" + this->getLabel();
+        GrGLGpu* glGpu = static_cast<GrGLGpu*>(this->getGpu());
+        if (glGpu->glCaps().debugSupport()) {
+            GR_GL_CALL(glGpu->glInterface(),
+                       ObjectLabel(GR_GL_TEXTURE, fRenderbufferID, -1, label.c_str()));
+        }
+    }
 }

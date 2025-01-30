@@ -4,12 +4,17 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/GrRingBuffer.h"
 
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/private/base/SkAlign.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/RefCntedCallback.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
 #include "src/gpu/ganesh/GrGpu.h"
 #include "src/gpu/ganesh/GrResourceProvider.h"
+
+#include <utility>
 
 // Get offset into buffer that has enough space for size
 // Returns fTotalSize if no space
@@ -69,7 +74,10 @@ GrRingBuffer::Slice GrRingBuffer::suballocate(size_t size) {
     }
 
     GrResourceProvider* resourceProvider = fGpu->getContext()->priv().resourceProvider();
-    fCurrentBuffer = resourceProvider->createBuffer(fTotalSize, fType, kDynamic_GrAccessPattern);
+    fCurrentBuffer = resourceProvider->createBuffer(fTotalSize,
+                                                    fType,
+                                                    kDynamic_GrAccessPattern,
+                                                    GrResourceProvider::ZeroInit::kNo);
 
     SkASSERT(fCurrentBuffer);
     fHead = 0;
@@ -99,7 +107,7 @@ void GrRingBuffer::startSubmit(GrGpu* gpu) {
         submitData->fOwner = this;
         submitData->fLastHead = fHead;
         submitData->fGenID = fGenID;
-        gpu->addFinishedProc(FinishSubmit, submitData);
+        gpu->addFinishedCallback(skgpu::AutoCallback(FinishSubmit, submitData));
         fNewAllocation = false;
     }
 }

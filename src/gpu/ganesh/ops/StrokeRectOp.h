@@ -5,17 +5,17 @@
  * found in the LICENSE file.
  */
 
-#ifndef StrokeRectOp_DEFINED
-#define StrokeRectOp_DEFINED
+#ifndef skgpu_ganesh_StrokeRectOp_DEFINED
+#define skgpu_ganesh_StrokeRectOp_DEFINED
 
-#include "include/private/gpu/ganesh/GrTypesPriv.h"
 #include "src/gpu/ganesh/ops/GrOp.h"
 
 class GrPaint;
 class GrRecordingContext;
 class SkMatrix;
-struct SkRect;
 class SkStrokeRec;
+enum class GrAAType : unsigned int;
+struct SkRect;
 
 /**
  * A set of factory functions for drawing stroked rectangles either coverage-antialiased, or
@@ -23,7 +23,7 @@ class SkStrokeRec;
  * the GrPaint is only consumed by these methods if a valid op is returned. If null is returned then
  * the paint is unmodified and may still be used.
  */
-namespace skgpu::v1::StrokeRectOp {
+namespace skgpu::ganesh::StrokeRectOp {
 
 GrOp::Owner Make(GrRecordingContext*,
                  GrPaint&&,
@@ -40,6 +40,6 @@ GrOp::Owner MakeNested(GrRecordingContext*,
                        const SkMatrix& viewMatrix,
                        const SkRect rects[2]);
 
-} // namespace skgpu::v1::StrokeRectOp
+} // namespace skgpu::ganesh::StrokeRectOp
 
-#endif // StrokeRectOp_DEFINED
+#endif // skgpu_ganesh_StrokeRectOp_DEFINED

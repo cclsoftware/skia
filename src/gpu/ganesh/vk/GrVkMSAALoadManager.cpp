@@ -7,19 +7,39 @@
 
 #include "src/gpu/ganesh/vk/GrVkMSAALoadManager.h"
 
-#include "include/gpu/GrDirectContext.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkRefCnt.h"
+#include "include/core/SkScalar.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
 #include "src/core/SkTraceEvent.h"
+#include "src/gpu/GpuRefCnt.h"
+#include "src/gpu/ganesh/GrAttachment.h"
+#include "src/gpu/ganesh/GrBuffer.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
+#include "src/gpu/ganesh/GrManagedResource.h"
 #include "src/gpu/ganesh/GrResourceProvider.h"
 #include "src/gpu/ganesh/vk/GrVkBuffer.h"
 #include "src/gpu/ganesh/vk/GrVkCommandBuffer.h"
 #include "src/gpu/ganesh/vk/GrVkDescriptorSet.h"
+#include "src/gpu/ganesh/vk/GrVkDescriptorSetManager.h"
 #include "src/gpu/ganesh/vk/GrVkGpu.h"
-#include "src/gpu/ganesh/vk/GrVkImageView.h"
+#include "src/gpu/ganesh/vk/GrVkImage.h"
 #include "src/gpu/ganesh/vk/GrVkPipeline.h"
-#include "src/gpu/ganesh/vk/GrVkRenderTarget.h"
 #include "src/gpu/ganesh/vk/GrVkResourceProvider.h"
+#include "src/gpu/ganesh/vk/GrVkUniformHandler.h"
 #include "src/gpu/ganesh/vk/GrVkUtil.h"
+#include "src/sksl/SkSLProgramSettings.h"
+#include "src/sksl/ir/SkSLProgram.h"
+
+#include <stdint.h>
+#include <string.h>
+#include <string>
+#include <utility>
+
+class GrGpuBuffer;
 
 GrVkMSAALoadManager::GrVkMSAALoadManager()
         : fVertShaderModule(VK_NULL_HANDLE)
@@ -33,7 +53,7 @@ bool GrVkMSAALoadManager::createMSAALoadProgram(GrVkGpu* gpu) {
 
     std::string vertShaderText;
     vertShaderText.append(
-            "layout(set = 0, binding = 0) uniform vertexUniformBuffer {"
+            "layout(vulkan, set=0, binding=0) uniform vertexUniformBuffer {"
             "half4 uPosXform;"
             "};"
 
@@ -46,31 +66,31 @@ bool GrVkMSAALoadManager::createMSAALoadProgram(GrVkGpu* gpu) {
 
     std::string fragShaderText;
     fragShaderText.append(
-            "layout(input_attachment_index = 0, set = 2, binding = 0) uniform subpassInput uInput;"
+            "layout(vulkan, input_attachment_index=0, set=2, binding=0) subpassInput uInput;"
 
             "// MSAA Load Program FS\n"
             "void main() {"
             "sk_FragColor = subpassLoad(uInput);"
             "}");
 
-    SkSL::Program::Settings settings;
+    SkSL::ProgramSettings settings;
     std::string spirv;
-    SkSL::Program::Inputs inputs;
+    SkSL::Program::Interface interface;
     if (!GrCompileVkShaderModule(gpu, vertShaderText, VK_SHADER_STAGE_VERTEX_BIT,
                                  &fVertShaderModule, &fShaderStageInfo[0], settings, &spirv,
-                                 &inputs)) {
+                                 &interface)) {
         this->destroyResources(gpu);
         return false;
     }
-    SkASSERT(inputs == SkSL::Program::Inputs());
+    SkASSERT(interface == SkSL::Program::Interface());
 
     if (!GrCompileVkShaderModule(gpu, fragShaderText, VK_SHADER_STAGE_FRAGMENT_BIT,
                                  &fFragShaderModule, &fShaderStageInfo[1], settings, &spirv,
-                                 &inputs)) {
+                                 &interface)) {
         this->destroyResources(gpu);
         return false;
     }
-    SkASSERT(inputs == SkSL::Program::Inputs());
+    SkASSERT(interface == SkSL::Program::Interface());
 
     VkDescriptorSetLayout dsLayout[GrVkUniformHandler::kDescSetCount];
 
@@ -182,8 +202,10 @@ bool GrVkMSAALoadManager::loadMSAAFromResolve(GrVkGpu* gpu,
     // TODO: Is it worth holding onto the last used uniform buffer and tracking the width, height,
     // dst width, and dst height so that we can use the buffer again without having to update the
     // data?
-    sk_sp<GrGpuBuffer> uniformBuffer = resourceProvider->createBuffer(
-            4 * sizeof(float), GrGpuBufferType::kUniform, kDynamic_GrAccessPattern, uniData);
+    sk_sp<GrGpuBuffer> uniformBuffer = resourceProvider->createBuffer(uniData,
+                                                                      sizeof(uniData),
+                                                                      GrGpuBufferType::kUniform,
+                                                                      kDynamic_GrAccessPattern);
     if (!uniformBuffer) {
         return false;
     }

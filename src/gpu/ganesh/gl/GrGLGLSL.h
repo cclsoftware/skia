@@ -8,7 +8,9 @@
 #ifndef GrGLGLSL_DEFINED
 #define GrGLGLSL_DEFINED
 
-#include "src/gpu/ganesh/glsl/GrGLSL.h"
+namespace SkSL {
+enum class GLSLGeneration;
+}
 
 struct GrGLDriverInfo;
 

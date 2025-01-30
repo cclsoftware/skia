@@ -9,11 +9,22 @@
 #define DrawableOp_DEFINED
 
 #include "include/core/SkDrawable.h"
+#include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/ops/GrOp.h"
 
-class GrRecordingContext;
+#include <memory>
 
-namespace skgpu::v1 {
+class GrAppliedClip;
+class GrDstProxyView;
+class GrOpFlushState;
+class GrRecordingContext;
+class GrSurfaceProxyView;
+class SkArenaAlloc;
+enum class GrLoadOp;
+enum class GrXferBarrierFlags;
+struct SkRect;
+
+namespace skgpu::ganesh {
 
 class DrawableOp final : public GrOp {
 public:
@@ -48,6 +59,6 @@ private:
     std::unique_ptr<SkDrawable::GpuDrawHandler> fDrawable;
 };
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh
 
 #endif // DrawableOp_DEFINED

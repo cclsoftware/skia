@@ -5,18 +5,19 @@
  * found in the LICENSE file.
  */
 
-#ifndef DashOp_DEFINED
-#define DashOp_DEFINED
+#ifndef skgpu_ganesh_DashOp_DEFINED
+#define skgpu_ganesh_DashOp_DEFINED
 
-#include "include/gpu/GrTypes.h"
 #include "src/gpu/ganesh/ops/GrOp.h"
 
 class GrPaint;
 class GrRecordingContext;
 class GrStyle;
+class SkMatrix;
 struct GrUserStencilSettings;
+struct SkPoint;
 
-namespace skgpu::v1::DashOp {
+namespace skgpu::ganesh::DashOp {
 
 enum class AAMode {
     kNone,
@@ -33,6 +34,6 @@ GrOp::Owner MakeDashLineOp(GrRecordingContext*,
                            const GrUserStencilSettings*);
 bool CanDrawDashLine(const SkPoint pts[2], const GrStyle& style, const SkMatrix& viewMatrix);
 
-}  // namespace skgpu::v1::DashOp
+}  // namespace skgpu::ganesh::DashOp
 
-#endif // DashOp_DEFINED
+#endif // skgpu_ganesh_DashOp_DEFINED

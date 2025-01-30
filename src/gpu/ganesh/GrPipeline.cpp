@@ -4,15 +4,21 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/GrPipeline.h"
 
+#include "include/gpu/GpuTypes.h"
+#include "include/private/base/SkAssert.h"
+#include "src/gpu/Blend.h"
 #include "src/gpu/KeyBuilder.h"
 #include "src/gpu/ganesh/GrAppliedClip.h"
-#include "src/gpu/ganesh/GrCaps.h"
+#include "src/gpu/ganesh/GrProcessorSet.h"
+#include "src/gpu/ganesh/GrScissorState.h"
+#include "src/gpu/ganesh/GrTexture.h"
 #include "src/gpu/ganesh/GrXferProcessor.h"
 #include "src/gpu/ganesh/glsl/GrGLSLProgramDataManager.h"
 #include "src/gpu/ganesh/glsl/GrGLSLUniformHandler.h"
+
+#include <utility>
 
 GrPipeline::GrPipeline(const InitArgs& args,
                        sk_sp<const GrXferProcessor> xferProcessor,
@@ -80,14 +86,14 @@ void GrPipeline::genKey(skgpu::KeyBuilder* b, const GrCaps& caps) const {
     InputFlags ignoredFlags = InputFlags::kSnapVerticesToPixelCenters;
     b->add32((uint32_t)fFlags & ~(uint32_t)ignoredFlags, "flags");
 
-    const GrXferProcessor::BlendInfo& blendInfo = this->getXferProcessor().getBlendInfo();
+    const skgpu::BlendInfo& blendInfo = this->getXferProcessor().getBlendInfo();
 
     static constexpr uint32_t kBlendCoeffSize = 5;
     static constexpr uint32_t kBlendEquationSize = 5;
     static_assert(static_cast<int>(skgpu::BlendCoeff::kLast) < (1 << kBlendCoeffSize));
     static_assert(static_cast<int>(skgpu::BlendEquation::kLast) < (1 << kBlendEquationSize));
 
-    b->addBool(blendInfo.fWriteColor, "writeColor");
+    b->addBool(blendInfo.fWritesColor, "writesColor");
     b->addBits(kBlendCoeffSize, static_cast<int>(blendInfo.fSrcBlend), "srcBlend");
     b->addBits(kBlendCoeffSize, static_cast<int>(blendInfo.fDstBlend), "dstBlend");
     b->addBits(kBlendEquationSize, static_cast<int>(blendInfo.fEquation), "equation");
@@ -107,7 +113,7 @@ void GrPipeline::visitProxies(const GrVisitProxyFunc& func) const {
         fp->visitProxies(func);
     }
     if (this->usesDstTexture()) {
-        func(this->dstProxyView().proxy(), GrMipmapped::kNo);
+        func(this->dstProxyView().proxy(), skgpu::Mipmapped::kNo);
     }
 }
 
@@ -117,11 +123,21 @@ void GrPipeline::setDstTextureUniforms(const GrGLSLProgramDataManager& pdm,
 
     if (dstTexture) {
         if (fBuiltinUniformHandles->fDstTextureCoordsUni.isValid()) {
+            float scaleX = 1.f;
+            float scaleY = 1.f;
+            if (dstTexture->textureType() == GrTextureType::kRectangle) {
+                // When we have a rectangle texture, we use the scaleX component to store the height
+                // in case we need to flip the coords when using a bottom left origin.
+                scaleX = dstTexture->height();
+            } else {
+                scaleX /= dstTexture->width();
+                scaleY /= dstTexture->height();
+            }
             pdm.set4f(fBuiltinUniformHandles->fDstTextureCoordsUni,
                       static_cast<float>(this->dstTextureOffset().fX),
                       static_cast<float>(this->dstTextureOffset().fY),
-                      1.f / dstTexture->width(),
-                      1.f / dstTexture->height());
+                      scaleX,
+                      scaleY);
         }
     } else {
         SkASSERT(!fBuiltinUniformHandles->fDstTextureCoordsUni.isValid());

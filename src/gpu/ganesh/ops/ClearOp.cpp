@@ -7,12 +7,9 @@
 
 #include "src/gpu/ganesh/ops/ClearOp.h"
 
-#include "include/gpu/GrRecordingContext.h"
-#include "src/gpu/ganesh/GrMemoryPool.h"
+#include "include/private/base/SkAssert.h"
 #include "src/gpu/ganesh/GrOpFlushState.h"
 #include "src/gpu/ganesh/GrOpsRenderPass.h"
-#include "src/gpu/ganesh/GrProxyProvider.h"
-#include "src/gpu/ganesh/GrRecordingContextPriv.h"
 
 namespace {
 
@@ -22,7 +19,7 @@ bool contains_scissor(const GrScissorState& a, const GrScissorState& b) {
 
 } // anonymous namespace
 
-namespace skgpu::v1 {
+namespace skgpu::ganesh {
 
 GrOp::Owner ClearOp::MakeColor(GrRecordingContext* context,
                                const GrScissorState& scissor,
@@ -94,5 +91,4 @@ void ClearOp::onExecute(GrOpFlushState* state, const SkRect& chainBounds) {
     }
 }
 
-} // namespace skgpu::v1
-
+}  // namespace skgpu::ganesh

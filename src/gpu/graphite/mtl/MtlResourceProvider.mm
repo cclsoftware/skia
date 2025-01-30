@@ -7,70 +7,99 @@
 
 #include "src/gpu/graphite/mtl/MtlResourceProvider.h"
 
+#include "include/gpu/ShaderErrorHandler.h"
 #include "include/gpu/graphite/BackendTexture.h"
+#include "include/gpu/graphite/mtl/MtlGraphiteTypesUtils.h"
+#include "src/sksl/SkSLProgramKind.h"
+
+#include "src/core/SkSLTypeShared.h"
+#include "src/gpu/Blend.h"
+#include "src/gpu/Swizzle.h"
 #include "src/gpu/graphite/GlobalCache.h"
-#include "src/gpu/graphite/GraphicsPipelineDesc.h"
+#include "src/gpu/graphite/RenderPassDesc.h"
+#include "src/gpu/graphite/Renderer.h"
 #include "src/gpu/graphite/mtl/MtlBuffer.h"
 #include "src/gpu/graphite/mtl/MtlCommandBuffer.h"
-#include "src/gpu/graphite/mtl/MtlGpu.h"
+#include "src/gpu/graphite/mtl/MtlComputePipeline.h"
 #include "src/gpu/graphite/mtl/MtlGraphicsPipeline.h"
 #include "src/gpu/graphite/mtl/MtlSampler.h"
+#include "src/gpu/graphite/mtl/MtlSharedContext.h"
 #include "src/gpu/graphite/mtl/MtlTexture.h"
+#include "src/gpu/mtl/MtlUtilsPriv.h"
 
 #import <Metal/Metal.h>
 
 namespace skgpu::graphite {
 
-MtlResourceProvider::MtlResourceProvider(const Gpu* gpu,
-                                         sk_sp<GlobalCache> globalCache,
-                                         SingleOwner* singleOwner)
-    : ResourceProvider(gpu, std::move(globalCache), singleOwner) {
+MtlResourceProvider::MtlResourceProvider(SharedContext* sharedContext,
+                                         SingleOwner* singleOwner,
+                                         uint32_t recorderID,
+                                         size_t resourceBudget)
+        : ResourceProvider(sharedContext, singleOwner, recorderID, resourceBudget) {}
+
+const MtlSharedContext* MtlResourceProvider::mtlSharedContext() {
+    return static_cast<const MtlSharedContext*>(fSharedContext);
 }
 
-const MtlGpu* MtlResourceProvider::mtlGpu() {
-    return static_cast<const MtlGpu*>(fGpu);
-}
-
-sk_sp<CommandBuffer> MtlResourceProvider::createCommandBuffer() {
-    return MtlCommandBuffer::Make(this->mtlGpu());
-}
-
-sk_sp<GraphicsPipeline> MtlResourceProvider::onCreateGraphicsPipeline(
-        const GraphicsPipelineDesc& pipelineDesc,
+sk_sp<MtlGraphicsPipeline> MtlResourceProvider::findOrCreateLoadMSAAPipeline(
         const RenderPassDesc& renderPassDesc) {
-    return MtlGraphicsPipeline::Make(this,
-                                     this->mtlGpu(),
-                                     pipelineDesc,
-                                     renderPassDesc);
+    uint64_t renderPassKey =
+            this->mtlSharedContext()->mtlCaps().getRenderPassDescKey(renderPassDesc);
+    sk_sp<MtlGraphicsPipeline> pipeline = fLoadMSAAPipelines[renderPassKey];
+    if (!pipeline) {
+        pipeline  = MtlGraphicsPipeline::MakeLoadMSAAPipeline(this->mtlSharedContext(), this,
+                                                              renderPassDesc);
+        if (pipeline) {
+            fLoadMSAAPipelines.set(renderPassKey, pipeline);
+        }
+    }
+
+    return pipeline;
+}
+
+sk_sp<GraphicsPipeline> MtlResourceProvider::createGraphicsPipeline(
+        const RuntimeEffectDictionary* runtimeDict,
+        const UniqueKey& pipelineKey,
+        const GraphicsPipelineDesc& pipelineDesc,
+        const RenderPassDesc& renderPassDesc,
+        SkEnumBitMask<PipelineCreationFlags> pipelineCreationFlags,
+        uint32_t compilationID) {
+    return MtlGraphicsPipeline::Make(this->mtlSharedContext(), this,
+                                     runtimeDict, pipelineKey, pipelineDesc, renderPassDesc,
+                                     pipelineCreationFlags, compilationID);
+}
+
+sk_sp<ComputePipeline> MtlResourceProvider::createComputePipeline(
+        const ComputePipelineDesc& pipelineDesc) {
+    return MtlComputePipeline::Make(this->mtlSharedContext(), pipelineDesc);
 }
 
 sk_sp<Texture> MtlResourceProvider::createTexture(SkISize dimensions,
                                                   const TextureInfo& info) {
-    return MtlTexture::Make(this->mtlGpu(), dimensions, info);
+    return MtlTexture::Make(this->mtlSharedContext(), dimensions, info);
 }
 
-sk_sp<Texture> MtlResourceProvider::createWrappedTexture(const BackendTexture& texture) {
-    MtlHandle mtlHandleTexture = texture.getMtlTexture();
+sk_sp<Texture> MtlResourceProvider::onCreateWrappedTexture(const BackendTexture& texture) {
+    CFTypeRef mtlHandleTexture = BackendTextures::GetMtlTexture(texture);
     if (!mtlHandleTexture) {
         return nullptr;
     }
     sk_cfp<id<MTLTexture>> mtlTexture = sk_ret_cfp((id<MTLTexture>)mtlHandleTexture);
-    return MtlTexture::MakeWrapped(this->mtlGpu(),
-                                   texture.dimensions(),
-                                   texture.info(),
+    return MtlTexture::MakeWrapped(this->mtlSharedContext(), texture.dimensions(), texture.info(),
                                    std::move(mtlTexture));
 }
 
 sk_sp<Buffer> MtlResourceProvider::createBuffer(size_t size,
                                                 BufferType type,
-                                                PrioritizeGpuReads prioritizeGpuReads) {
-    return MtlBuffer::Make(this->mtlGpu(), size, type, prioritizeGpuReads);
+                                                AccessPattern accessPattern) {
+    return MtlBuffer::Make(this->mtlSharedContext(), size, type, accessPattern);
 }
 
-sk_sp<Sampler> MtlResourceProvider::createSampler(const SkSamplingOptions& samplingOptions,
-                                                         SkTileMode xTileMode,
-                                                         SkTileMode yTileMode) {
-    return MtlSampler::Make(this->mtlGpu(), samplingOptions, xTileMode, yTileMode);
+sk_sp<Sampler> MtlResourceProvider::createSampler(const SamplerDesc& samplerDesc) {
+    return MtlSampler::Make(this->mtlSharedContext(),
+                            samplerDesc.samplingOptions(),
+                            samplerDesc.tileModeX(),
+                            samplerDesc.tileModeY());
 }
 
 namespace {
@@ -145,12 +174,29 @@ sk_cfp<id<MTLDepthStencilState>> MtlResourceProvider::findOrCreateCompatibleDept
         }
 
         sk_cfp<id<MTLDepthStencilState>> dss(
-                [this->mtlGpu()->device() newDepthStencilStateWithDescriptor: desc]);
+                [this->mtlSharedContext()->device() newDepthStencilStateWithDescriptor: desc]);
         depthStencilState = fDepthStencilStates.set(depthStencilSettings, std::move(dss));
     }
 
     SkASSERT(depthStencilState);
     return *depthStencilState;
+}
+
+BackendTexture MtlResourceProvider::onCreateBackendTexture(SkISize dimensions,
+                                                           const TextureInfo& info) {
+    sk_cfp<id<MTLTexture>> texture = MtlTexture::MakeMtlTexture(this->mtlSharedContext(),
+                                                                dimensions,
+                                                                info);
+    if (!texture) {
+        return {};
+    }
+    return BackendTextures::MakeMetal(dimensions, (CFTypeRef)texture.release());
+}
+
+void MtlResourceProvider::onDeleteBackendTexture(const BackendTexture& texture) {
+    SkASSERT(texture.backend() == BackendApi::kMetal);
+    CFTypeRef texHandle = BackendTextures::GetMtlTexture(texture);
+    SkCFSafeRelease(texHandle);
 }
 
 } // namespace skgpu::graphite

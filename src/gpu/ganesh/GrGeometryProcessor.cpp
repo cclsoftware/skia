@@ -7,6 +7,10 @@
 
 #include "src/gpu/ganesh/GrGeometryProcessor.h"
 
+#include "include/core/SkSamplingOptions.h"
+#include "include/core/SkString.h"
+#include "include/private/SkSLSampleUsage.h"
+#include "include/private/base/SkSafe32.h"
 #include "src/core/SkMatrixPriv.h"
 #include "src/gpu/KeyBuilder.h"
 #include "src/gpu/ganesh/GrPipeline.h"
@@ -14,8 +18,12 @@
 #include "src/gpu/ganesh/glsl/GrGLSLProgramBuilder.h"
 #include "src/gpu/ganesh/glsl/GrGLSLUniformHandler.h"
 #include "src/gpu/ganesh/glsl/GrGLSLVarying.h"
+#include "src/gpu/ganesh/glsl/GrGLSLVertexGeoBuilder.h"
 
+#include <algorithm>
 #include <queue>
+#include <utility>
+#include <vector>
 
 GrGeometryProcessor::GrGeometryProcessor(ClassID classID) : GrProcessor(classID) {}
 
@@ -79,32 +87,24 @@ ProgramImpl::emitCode(EmitArgs& args, const GrPipeline& pipeline) {
     GrGPArgs gpArgs;
     this->onEmitCode(args, &gpArgs);
 
-    GrShaderVar positionVar = gpArgs.fPositionVar;
-    // skia:12198
-    if (args.fGeomProc.willUseTessellationShaders()) {
-        positionVar = {};
-    }
     FPCoordsMap transformMap = this->collectTransforms(args.fVertBuilder,
                                                        args.fVaryingHandler,
                                                        args.fUniformHandler,
                                                        gpArgs.fLocalCoordShader,
                                                        gpArgs.fLocalCoordVar,
-                                                       positionVar,
+                                                       gpArgs.fPositionVar,
                                                        pipeline);
 
-    // Tessellation shaders are temporarily responsible for integrating their own code strings
-    // while we work out full support.
-    if (!args.fGeomProc.willUseTessellationShaders()) {
-        GrGLSLVertexBuilder* vBuilder = args.fVertBuilder;
-        // Emit the vertex position to the hardware in the normalized window coordinates it expects.
-        SkASSERT(SkSLType::kFloat2 == gpArgs.fPositionVar.getType() ||
-                 SkSLType::kFloat3 == gpArgs.fPositionVar.getType());
-        vBuilder->emitNormalizedSkPosition(gpArgs.fPositionVar.c_str(),
-                                           gpArgs.fPositionVar.getType());
-        if (SkSLType::kFloat2 == gpArgs.fPositionVar.getType()) {
-            args.fVaryingHandler->setNoPerspective();
-        }
+    GrGLSLVertexBuilder* vBuilder = args.fVertBuilder;
+    // Emit the vertex position to the hardware in the normalized window coordinates it expects.
+    SkASSERT(SkSLType::kFloat2 == gpArgs.fPositionVar.getType() ||
+                SkSLType::kFloat3 == gpArgs.fPositionVar.getType());
+    vBuilder->emitNormalizedSkPosition(gpArgs.fPositionVar.c_str(),
+                                        gpArgs.fPositionVar.getType());
+    if (SkSLType::kFloat2 == gpArgs.fPositionVar.getType()) {
+        args.fVaryingHandler->setNoPerspective();
     }
+
     return {transformMap, gpArgs.fLocalCoordVar};
 }
 
@@ -121,8 +121,6 @@ ProgramImpl::FPCoordsMap ProgramImpl::collectTransforms(GrGLSLVertexBuilder* vb,
     SkASSERT(positionVar.getType() == SkSLType::kFloat2 ||
              positionVar.getType() == SkSLType::kFloat3 ||
              positionVar.getType() == SkSLType::kVoid);
-
-    enum class BaseCoord { kNone, kLocal, kPosition };
 
     auto baseLocalCoordFSVar = [&, baseLocalCoordVarying = GrGLSLVarying()]() mutable {
         if (localCoordsShader == kFragment_GrShaderType) {
@@ -305,7 +303,7 @@ void ProgramImpl::emitTransformCode(GrGLSLVertexBuilder* vb, GrGLSLUniformHandle
 
         vb->codeAppend("{\n");
         if (info.varying.type() == SkSLType::kFloat2) {
-            if (vb->getProgramBuilder()->shaderCaps()->nonsquareMatrixSupport()) {
+            if (vb->getProgramBuilder()->shaderCaps()->fNonsquareMatrixSupport) {
                 vb->codeAppendf("%s = float3x2(%s) * %s",
                                 info.varying.vsOut(),
                                 transformExpression.c_str(),
@@ -342,7 +340,7 @@ void ProgramImpl::setupUniformColor(GrGLSLFPFragmentBuilder* fragBuilder,
                                                "Color",
                                                &stagedLocalVarName);
     fragBuilder->codeAppendf("%s = %s;", outputName, stagedLocalVarName);
-    if (fragBuilder->getProgramBuilder()->shaderCaps()->mustObfuscateUniformColor()) {
+    if (fragBuilder->getProgramBuilder()->shaderCaps()->fMustObfuscateUniformColor) {
         fragBuilder->codeAppendf("%s = max(%s, half4(0));", outputName, outputName);
     }
 }
@@ -359,7 +357,7 @@ void ProgramImpl::SetTransform(const GrGLSLProgramDataManager& pdman,
     if (state) {
         *state = matrix;
     }
-    if (matrix.isScaleTranslate() && !shaderCaps.reducedShaderMode()) {
+    if (matrix.isScaleTranslate() && !shaderCaps.fReducedShaderMode) {
         // ComputeMatrixKey and writeX() assume the uniform is a float4 (can't assert since nothing
         // is exposed on a handle, but should be caught lower down).
         float values[4] = {matrix.getScaleX(), matrix.getTranslateX(),
@@ -393,13 +391,13 @@ static void write_vertex_position(GrGLSLVertexBuilder* vertBuilder,
     SkASSERT(inPos.getType() == SkSLType::kFloat3 || inPos.getType() == SkSLType::kFloat2);
     SkString outName = vertBuilder->newTmpVarName(inPos.getName().c_str());
 
-    if (matrix.isIdentity() && !shaderCaps.reducedShaderMode()) {
+    if (matrix.isIdentity() && !shaderCaps.fReducedShaderMode) {
         write_passthrough_vertex_position(vertBuilder, inPos, outPos);
         return;
     }
     SkASSERT(matrixUniform);
 
-    bool useCompactTransform = matrix.isScaleTranslate() && !shaderCaps.reducedShaderMode();
+    bool useCompactTransform = matrix.isScaleTranslate() && !shaderCaps.fReducedShaderMode;
     const char* mangledMatrixName;
     *matrixUniform = uniformHandler->addUniform(nullptr,
                                                 kVertex_GrShaderFlag,
@@ -441,7 +439,7 @@ static void write_vertex_position(GrGLSLVertexBuilder* vertBuilder,
                                  mangledMatrixName,
                                  inPos.getName().c_str(),
                                  mangledMatrixName);
-    } else if (shaderCaps.nonsquareMatrixSupport()) {
+    } else if (shaderCaps.fNonsquareMatrixSupport) {
         vertBuilder->codeAppendf("float2 %s = float3x2(%s) * %s.xy1;\n",
                                  outName.c_str(),
                                  mangledMatrixName,

@@ -7,25 +7,45 @@
 
 #include "src/gpu/ganesh/vk/GrVkPipelineState.h"
 
-#include "src/core/SkMipmap.h"
+#include "include/core/SkSamplingOptions.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkTemplates.h"
+#include "include/private/gpu/vk/SkiaVulkan.h"
+#include "src/gpu/ganesh/GrBuffer.h"
+#include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrFragmentProcessor.h"
 #include "src/gpu/ganesh/GrGeometryProcessor.h"
+#include "src/gpu/ganesh/GrManagedResource.h"
 #include "src/gpu/ganesh/GrPipeline.h"
-#include "src/gpu/ganesh/GrRenderTarget.h"
-#include "src/gpu/ganesh/GrTexture.h"
+#include "src/gpu/ganesh/GrProgramInfo.h"
+#include "src/gpu/ganesh/GrSamplerState.h"
+#include "src/gpu/ganesh/GrSurface.h"
+#include "src/gpu/ganesh/GrSurfaceProxy.h"
 #include "src/gpu/ganesh/GrXferProcessor.h"
 #include "src/gpu/ganesh/effects/GrTextureEffect.h"
 #include "src/gpu/ganesh/vk/GrVkBuffer.h"
 #include "src/gpu/ganesh/vk/GrVkCommandBuffer.h"
-#include "src/gpu/ganesh/vk/GrVkDescriptorPool.h"
 #include "src/gpu/ganesh/vk/GrVkDescriptorSet.h"
 #include "src/gpu/ganesh/vk/GrVkGpu.h"
+#include "src/gpu/ganesh/vk/GrVkImage.h"
 #include "src/gpu/ganesh/vk/GrVkImageView.h"
-#include "src/gpu/ganesh/vk/GrVkMemory.h"
 #include "src/gpu/ganesh/vk/GrVkPipeline.h"
-#include "src/gpu/ganesh/vk/GrVkRenderTarget.h"
+#include "src/gpu/ganesh/vk/GrVkResourceProvider.h"
 #include "src/gpu/ganesh/vk/GrVkSampler.h"
 #include "src/gpu/ganesh/vk/GrVkTexture.h"
+#include "src/gpu/ganesh/vk/GrVkUniformHandler.h"
+#include "src/gpu/ganesh/vk/GrVkUtil.h"
+#include "src/sksl/SkSLCompiler.h"
+
+#include <string.h>
+#include <array>
+#include <functional>
+#include <utility>
+
+class GrTexture;
+
+using namespace skia_private;
 
 GrVkPipelineState::GrVkPipelineState(
         GrVkGpu* gpu,
@@ -65,7 +85,7 @@ GrVkPipelineState::~GrVkPipelineState() {
 void GrVkPipelineState::freeGPUResources(GrVkGpu* gpu) {
     fPipeline.reset();
     fDataManager.releaseData();
-    for (int i = 0; i < fImmutableSamplers.count(); ++i) {
+    for (int i = 0; i < fImmutableSamplers.size(); ++i) {
         if (fImmutableSamplers[i]) {
             fImmutableSamplers[i]->unref();
             fImmutableSamplers[i] = nullptr;
@@ -122,7 +142,7 @@ bool GrVkPipelineState::setAndBindTextures(GrVkGpu* gpu,
         GrSamplerState fState;
         GrVkTexture* fTexture;
     };
-    SkAutoSTArray<8, SamplerBindings> samplerBindings(fNumSamplers);
+    AutoSTArray<8, SamplerBindings> samplerBindings(fNumSamplers);
     int currTextureBinding = 0;
 
     for (int i = 0; i < geomProc.numTextureSamplers(); ++i) {

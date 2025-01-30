@@ -16,8 +16,10 @@ class Sampler : public Resource {
 public:
     ~Sampler() override;
 
+    const char* getResourceType() const override { return "Sampler"; }
+
 protected:
-    Sampler(const Gpu*);
+    Sampler(const SharedContext*);
 
 private:
 };

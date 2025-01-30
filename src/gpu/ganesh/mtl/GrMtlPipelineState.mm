@@ -19,6 +19,7 @@
 #include "src/gpu/ganesh/mtl/GrMtlGpu.h"
 #include "src/gpu/ganesh/mtl/GrMtlRenderCommandEncoder.h"
 #include "src/gpu/ganesh/mtl/GrMtlTexture.h"
+#include "src/sksl/SkSLCompiler.h"
 
 #if !__has_feature(objc_arc)
 #error This file must be compiled with Arc. Use -fobjc-arc flag
@@ -94,7 +95,7 @@ void GrMtlPipelineState::setData(GrMtlFramebuffer* framebuffer,
 void GrMtlPipelineState::setTextures(const GrGeometryProcessor& geomProc,
                                      const GrPipeline& pipeline,
                                      const GrSurfaceProxy* const geomProcTextures[]) {
-    fSamplerBindings.reset();
+    fSamplerBindings.clear();
     for (int i = 0; i < geomProc.numTextureSamplers(); ++i) {
         SkASSERT(geomProcTextures[i]->asTextureProxy());
         const auto& sampler = geomProc.textureSampler(i);
@@ -111,7 +112,7 @@ void GrMtlPipelineState::setTextures(const GrGeometryProcessor& geomProc,
         fSamplerBindings.emplace_back(te.samplerState(), te.texture(), fGpu);
     });
 
-    SkASSERT(fNumSamplers == fSamplerBindings.count());
+    SkASSERT(fNumSamplers == fSamplerBindings.size());
 }
 
 void GrMtlPipelineState::setDrawState(GrMtlRenderCommandEncoder* renderCmdEncoder,
@@ -127,7 +128,7 @@ void GrMtlPipelineState::bindUniforms(GrMtlRenderCommandEncoder* renderCmdEncode
 }
 
 void GrMtlPipelineState::bindTextures(GrMtlRenderCommandEncoder* renderCmdEncoder) {
-    SkASSERT(fNumSamplers == fSamplerBindings.count());
+    SkASSERT(fNumSamplers == fSamplerBindings.size());
     for (int index = 0; index < fNumSamplers; ++index) {
         renderCmdEncoder->setFragmentTexture(fSamplerBindings[index].fTexture, index);
         renderCmdEncoder->setFragmentSamplerState(fSamplerBindings[index].fSampler, index);
@@ -164,7 +165,7 @@ void GrMtlPipelineState::setBlendConstants(GrMtlRenderCommandEncoder* renderCmdE
         return;
     }
 
-    const GrXferProcessor::BlendInfo& blendInfo = xferProcessor.getBlendInfo();
+    const skgpu::BlendInfo& blendInfo = xferProcessor.getBlendInfo();
     skgpu::BlendCoeff srcCoeff = blendInfo.fSrcBlend;
     skgpu::BlendCoeff dstCoeff = blendInfo.fDstBlend;
     if (skgpu::BlendCoeffRefsConstant(srcCoeff) || skgpu::BlendCoeffRefsConstant(dstCoeff)) {
@@ -181,7 +182,7 @@ void GrMtlPipelineState::setDepthStencilState(GrMtlRenderCommandEncoder* renderC
             fGpu->resourceProvider().findOrCreateCompatibleDepthStencilState(fStencil, origin);
     if (!fStencil.isDisabled()) {
         if (fStencil.isTwoSided()) {
-            if (@available(macOS 10.11, iOS 9.0, *)) {
+            if (@available(macOS 10.11, iOS 9.0, tvOS 9.0, *)) {
                 renderCmdEncoder->setStencilFrontBackReferenceValues(
                         fStencil.postOriginCCWFace(origin).fRef,
                         fStencil.postOriginCWFace(origin).fRef);
@@ -226,7 +227,7 @@ void GrMtlPipelineState::SetDynamicScissorRectState(GrMtlRenderCommandEncoder* r
 
 bool GrMtlPipelineState::doesntSampleAttachment(
         const MTLRenderPassAttachmentDescriptor* attachment) const {
-    for (int i = 0; i < fSamplerBindings.count(); ++i) {
+    for (int i = 0; i < fSamplerBindings.size(); ++i) {
         if (attachment.texture == fSamplerBindings[i].fTexture ||
             attachment.resolveTexture == fSamplerBindings[i].fTexture) {
             return false;

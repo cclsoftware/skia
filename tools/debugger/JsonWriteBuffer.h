@@ -14,6 +14,10 @@
 #include "include/core/SkTypes.h"
 #include "src/core/SkWriteBuffer.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <string_view>
+
 class SkFlattenable;
 class SkImage;
 class SkJSONWriter;
@@ -33,7 +37,7 @@ struct SkRect;
 class JsonWriteBuffer final : public SkWriteBuffer {
 public:
     JsonWriteBuffer(SkJSONWriter* writer, UrlDataManager* urlDataManager)
-            : fUrlDataManager(urlDataManager), fWriter(writer), fCount(0) {}
+            : SkWriteBuffer({}), fUrlDataManager(urlDataManager), fWriter(writer), fCount(0) {}
 
     void writePad32(const void* buffer, size_t bytes) override;
     void writeByteArray(const void* data, size_t size) override;
@@ -43,7 +47,7 @@ public:
     void writeInt(int32_t value) override;
     void writeIntArray(const int32_t* value, uint32_t count) override;
     void writeUInt(uint32_t value) override;
-    void writeString(const char* value) override;
+    void writeString(std::string_view value) override;
 
     void   writeFlattenable(const SkFlattenable* flattenable) override;
     void   writeColor(SkColor color) override;

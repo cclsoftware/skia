@@ -7,12 +7,31 @@
 
 #include "src/gpu/ganesh/effects/GrTextureEffect.h"
 
-#include "src/core/SkMatrixPriv.h"
+#include "include/core/SkSize.h"
+#include "include/core/SkString.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkFloatingPoint.h"
+#include "include/private/base/SkMath.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/base/SkRandom.h"
+#include "src/core/SkSLTypeShared.h"
 #include "src/gpu/KeyBuilder.h"
+#include "src/gpu/ganesh/GrSurfaceProxy.h"
+#include "src/gpu/ganesh/GrTestUtils.h"
 #include "src/gpu/ganesh/GrTexture.h"
 #include "src/gpu/ganesh/effects/GrMatrixEffect.h"
-#include "src/gpu/ganesh/glsl/GrGLSLProgramBuilder.h"
-#include "src/sksl/SkSLUtil.h"
+#include "src/gpu/ganesh/glsl/GrGLSLFragmentShaderBuilder.h"
+#include "src/gpu/ganesh/glsl/GrGLSLProgramDataManager.h"
+#include "src/gpu/ganesh/glsl/GrGLSLUniformHandler.h"
+
+#include <algorithm>
+#include <cmath>
+#include <utility>
+
+enum SkAlphaType : int;
+struct GrShaderCaps;
 
 using Wrap = GrSamplerState::WrapMode;
 using Filter = GrSamplerState::Filter;
@@ -68,14 +87,26 @@ GrTextureEffect::Sampling::Sampling(const GrSurfaceProxy& proxy,
     auto filter = sampler.filter();
     auto mm     = sampler.mipmapMode();
 
-    // TODO: Use HW border color when available.
-    // TODO: Move this back into resolve below when aniso is supported with shader-based subsetting.
-    bool needShaderBorder = false;
-    if ((sampler.wrapModeX() == Wrap::kClampToBorder ||
-         sampler.wrapModeY() == Wrap::kClampToBorder) &&
-        (!caps.clampToBorderSupport() || border[0] || border[1] || border[2] || border[3])) {
-        needShaderBorder = true;
-    }
+    auto canDoWrapInHW = [&](int size, Wrap wrap) {
+        if (alwaysUseShaderTileMode) {
+            return false;
+        }
+        // TODO: Use HW border color when available.
+        if (wrap == Wrap::kClampToBorder &&
+            (!caps.clampToBorderSupport() || border[0] || border[1] || border[2] || border[3])) {
+            return false;
+        }
+        if (wrap != Wrap::kClamp && !caps.npotTextureTileSupport() && !SkIsPow2(size)) {
+            return false;
+        }
+        if (type != GrTextureType::k2D &&
+                   !(wrap == Wrap::kClamp || wrap == Wrap::kClampToBorder)) {
+            return false;
+        }
+        return true;
+    };
+
+    SkISize dim = proxy.isFullyLazy() ? SkISize{-1, -1} : proxy.backingStoreDimensions();
 
     // TODO: Right now if we use shader based subsetting for any reason we just completely drop
     // aniso. Longer term allow shader subsetting, reusing the special repeat mode LOD selection
@@ -85,12 +116,14 @@ GrTextureEffect::Sampling::Sampling(const GrSurfaceProxy& proxy,
     bool aniso = sampler.isAniso();
     SkASSERT(!aniso || caps.anisoSupport());
     if (aniso) {
-        bool anisoSubset = !proxy.backingStoreBoundsRect().contains(subset) &&
+        bool anisoSubset = !subset.contains(proxy.backingStoreBoundsRect()) &&
                            (!domain || !subset.contains(*domain));
-        if (needShaderBorder || anisoSubset) {
-            MipmapMode newMM = proxy.asTextureProxy()->mipmapped() == GrMipmapped::kYes
-                                    ? MipmapMode::kLinear
-                                    : MipmapMode::kNone;
+        bool needsShaderWrap = !canDoWrapInHW(dim.width(),  sampler.wrapModeX()) ||
+                               !canDoWrapInHW(dim.height(), sampler.wrapModeY());
+        if (needsShaderWrap || anisoSubset) {
+            MipmapMode newMM = proxy.asTextureProxy()->mipmapped() == skgpu::Mipmapped::kYes
+                                       ? MipmapMode::kLinear
+                                       : MipmapMode::kNone;
             sampler = GrSamplerState(sampler.wrapModeX(),
                                      sampler.wrapModeY(),
                                      SkFilterMode::kLinear,
@@ -101,17 +134,7 @@ GrTextureEffect::Sampling::Sampling(const GrSurfaceProxy& proxy,
 
     auto resolve = [&](int size, Wrap wrap, Span subset, Span domain, float linearFilterInset) {
         Result1D r;
-        bool canDoModeInHW = !alwaysUseShaderTileMode;
-        // TODO: Use HW border color when available.
-        if (wrap == Wrap::kClampToBorder &&
-            (!caps.clampToBorderSupport() || border[0] || border[1] || border[2] || border[3])) {
-            canDoModeInHW = false;
-        } else if (wrap != Wrap::kClamp && !caps.npotTextureTileSupport() && !SkIsPow2(size)) {
-            canDoModeInHW = false;
-        } else if (type != GrTextureType::k2D &&
-                   !(wrap == Wrap::kClamp || wrap == Wrap::kClampToBorder)) {
-            canDoModeInHW = false;
-        }
+        bool canDoModeInHW = canDoWrapInHW(size, wrap);
         if (canDoModeInHW && size > 0 && subset.fA <= 0 && subset.fB >= size) {
             r.fShaderMode = ShaderMode::kNone;
             r.fHWWrap = wrap;
@@ -122,16 +145,16 @@ GrTextureEffect::Sampling::Sampling(const GrSurfaceProxy& proxy,
         r.fShaderSubset = subset;
         bool domainIsSafe = false;
         if (filter == Filter::kNearest) {
-            Span isubset{sk_float_floor(subset.fA), sk_float_ceil(subset.fB)};
+            Span isubset{std::floor(subset.fA), std::ceil(subset.fB)};
             if (domain.fA > isubset.fA && domain.fB < isubset.fB) {
                 domainIsSafe = true;
             }
             // This inset prevents sampling neighboring texels that could occur when
             // texture coords fall exactly at texel boundaries (depending on precision
             // and GPU-specific snapping at the boundary).
-            r.fShaderClamp = isubset.makeInset(0.5f);
+            r.fShaderClamp = isubset.makeInset(0.5f + kInsetEpsilon);
         } else {
-            r.fShaderClamp = subset.makeInset(linearFilterInset);
+            r.fShaderClamp = subset.makeInset(linearFilterInset + kInsetEpsilon);
             if (r.fShaderClamp.contains(domain)) {
                 domainIsSafe = true;
             }
@@ -152,8 +175,6 @@ GrTextureEffect::Sampling::Sampling(const GrSurfaceProxy& proxy,
 
     Result1D x, y;
     if (!aniso) {
-        SkISize dim = proxy.isFullyLazy() ? SkISize{-1, -1} : proxy.backingStoreDimensions();
-
         Span subsetX{subset.fLeft, subset.fRight};
         auto domainX = domain ? Span{domain->fLeft, domain->fRight}
                               : Span{SK_FloatNegativeInfinity, SK_FloatInfinity};
@@ -346,7 +367,7 @@ bool GrTextureEffect::ShaderModeRequiresUnormCoord(ShaderMode m) {
         case ShaderMode::kClampToBorder_Filter:     return true;
     }
     SkUNREACHABLE;
-};
+}
 
 void GrTextureEffect::Impl::emitCode(EmitArgs& args) {
     using ShaderMode = GrTextureEffect::ShaderMode;
@@ -830,8 +851,8 @@ std::unique_ptr<GrFragmentProcessor> GrTextureEffect::clone() const {
     return std::unique_ptr<GrFragmentProcessor>(new GrTextureEffect(*this));
 }
 
-GR_DEFINE_FRAGMENT_PROCESSOR_TEST(GrTextureEffect);
-#if GR_TEST_UTILS
+GR_DEFINE_FRAGMENT_PROCESSOR_TEST(GrTextureEffect)
+#if defined(GPU_TEST_UTILS)
 std::unique_ptr<GrFragmentProcessor> GrTextureEffect::TestCreate(GrProcessorTestData* testData) {
     auto [view, ct, at] = testData->randomView();
     Wrap wrapModes[2];
@@ -839,7 +860,7 @@ std::unique_ptr<GrFragmentProcessor> GrTextureEffect::TestCreate(GrProcessorTest
 
     Filter filter = testData->fRandom->nextBool() ? Filter::kLinear : Filter::kNearest;
     MipmapMode mm = MipmapMode::kNone;
-    if (view.asTextureProxy()->mipmapped() == GrMipmapped::kYes) {
+    if (view.asTextureProxy()->mipmapped() == skgpu::Mipmapped::kYes) {
         mm = testData->fRandom->nextBool() ? MipmapMode::kLinear : MipmapMode::kNone;
     }
     GrSamplerState params(wrapModes, filter, mm);

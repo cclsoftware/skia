@@ -12,7 +12,7 @@
 
 GrD3DTextureRenderTarget::GrD3DTextureRenderTarget(
         GrD3DGpu* gpu,
-        SkBudgeted budgeted,
+        skgpu::Budgeted budgeted,
         SkISize dimensions,
         const GrD3DTextureResourceInfo& info,
         sk_sp<GrD3DResourceState> state,
@@ -41,7 +41,7 @@ GrD3DTextureRenderTarget::GrD3DTextureRenderTarget(
 
 GrD3DTextureRenderTarget::GrD3DTextureRenderTarget(
         GrD3DGpu* gpu,
-        SkBudgeted budgeted,
+        skgpu::Budgeted budgeted,
         SkISize dimensions,
         const GrD3DTextureResourceInfo& info,
         sk_sp<GrD3DResourceState> state,
@@ -104,13 +104,13 @@ GrD3DTextureRenderTarget::GrD3DTextureRenderTarget(
 
 sk_sp<GrD3DTextureRenderTarget> GrD3DTextureRenderTarget::MakeNewTextureRenderTarget(
         GrD3DGpu* gpu,
-        SkBudgeted budgeted,
+        skgpu::Budgeted budgeted,
         SkISize dimensions,
         int sampleCnt,
         const D3D12_RESOURCE_DESC& resourceDesc,
         GrProtected isProtected,
-        GrMipmapStatus mipmapStatus) {
-
+        GrMipmapStatus mipmapStatus,
+        std::string_view label) {
     GrD3DTextureResourceInfo info;
     D3D12_RESOURCE_STATES initialState = sampleCnt > 1 ? D3D12_RESOURCE_STATE_RESOLVE_DEST
                                                        : D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -142,6 +142,9 @@ sk_sp<GrD3DTextureRenderTarget> GrD3DTextureRenderTarget::MakeNewTextureRenderTa
         SkColor4f clearColor = { 0, 0, 0, 0 };
         std::tie(msInfo, msState) =
                 GrD3DTextureResource::CreateMSAA(gpu, dimensions, sampleCnt, info, clearColor);
+        if (!msInfo.fResource || !msState) {
+            return nullptr;
+        }
 
         const GrD3DDescriptorHeap::CPUHandle msaaRenderTargetView =
                 gpu->resourceProvider().createRenderTargetView(msInfo.fResource.get());
@@ -157,7 +160,7 @@ sk_sp<GrD3DTextureRenderTarget> GrD3DTextureRenderTarget::MakeNewTextureRenderTa
                                                                      msaaRenderTargetView,
                                                                      renderTargetView,
                                                                      mipmapStatus,
-                                                                     /*label=*/{});
+                                                                     label);
         return sk_sp<GrD3DTextureRenderTarget>(trt);
     } else {
         GrD3DTextureRenderTarget* trt = new GrD3DTextureRenderTarget(gpu,
@@ -168,7 +171,7 @@ sk_sp<GrD3DTextureRenderTarget> GrD3DTextureRenderTarget::MakeNewTextureRenderTa
                                                                      shaderResourceView,
                                                                      renderTargetView,
                                                                      mipmapStatus,
-                                                                     /*label=*/{});
+                                                                     label);
         return sk_sp<GrD3DTextureRenderTarget>(trt);
     }
 }
@@ -201,33 +204,38 @@ sk_sp<GrD3DTextureRenderTarget> GrD3DTextureRenderTarget::MakeWrappedTextureRend
         SkColor4f clearColor = { 1, 1, 1, 1 };
         std::tie(msInfo, msState) =
                 GrD3DTextureResource::CreateMSAA(gpu, dimensions, sampleCnt, info, clearColor);
+        if (!msInfo.fResource || !msState) {
+            return nullptr;
+        }
 
         const GrD3DDescriptorHeap::CPUHandle msaaRenderTargetView =
                 gpu->resourceProvider().createRenderTargetView(msInfo.fResource.get());
 
-        GrD3DTextureRenderTarget* trt = new GrD3DTextureRenderTarget(gpu,
-                                                                     dimensions,
-                                                                     info,
-                                                                     std::move(state),
-                                                                     shaderResourceView,
-                                                                     msInfo,
-                                                                     std::move(msState),
-                                                                     msaaRenderTargetView,
-                                                                     renderTargetView,
-                                                                     mipmapStatus,
-                                                                     cacheable,
-                                                                     /*label=*/{});
+        GrD3DTextureRenderTarget* trt = new GrD3DTextureRenderTarget(
+                gpu,
+                dimensions,
+                info,
+                std::move(state),
+                shaderResourceView,
+                msInfo,
+                std::move(msState),
+                msaaRenderTargetView,
+                renderTargetView,
+                mipmapStatus,
+                cacheable,
+                /*label=*/"MakeWrappedTextureRenderTargetWithMSAASurface");
         return sk_sp<GrD3DTextureRenderTarget>(trt);
     } else {
-        return sk_sp<GrD3DTextureRenderTarget>(new GrD3DTextureRenderTarget(gpu,
-                                                                            dimensions,
-                                                                            info,
-                                                                            std::move(state),
-                                                                            shaderResourceView,
-                                                                            renderTargetView,
-                                                                            mipmapStatus,
-                                                                            cacheable,
-                                                                            /*label=*/{}));
+        return sk_sp<GrD3DTextureRenderTarget>(
+                new GrD3DTextureRenderTarget(gpu,
+                                             dimensions,
+                                             info,
+                                             std::move(state),
+                                             shaderResourceView,
+                                             renderTargetView,
+                                             mipmapStatus,
+                                             cacheable,
+                                             /*label=*/"MakeWrappedTextureRenderTarget"));
     }
 }
 
@@ -241,3 +249,8 @@ size_t GrD3DTextureRenderTarget::onGpuMemorySize() const {
                                   numColorSamples,  // TODO: this still correct?
                                   this->mipmapped());
 }
+
+void GrD3DTextureRenderTarget::onSetLabel() {
+    GrD3DRenderTarget::onSetLabel();
+}
+

@@ -7,11 +7,30 @@
 
 #include "src/gpu/ganesh/GrThreadSafeCache.h"
 
-#include "include/gpu/GrDirectContext.h"
+#include "include/core/SkSize.h"
+#include "include/core/SkTypes.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/private/base/SkTo.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/GpuTypesPriv.h"
+#include "src/gpu/Swizzle.h"
+#include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
 #include "src/gpu/ganesh/GrGpuBuffer.h"
 #include "src/gpu/ganesh/GrProxyProvider.h"
+#include "src/gpu/ganesh/GrRenderTargetProxy.h"  // IWYU pragma: keep
 #include "src/gpu/ganesh/GrResourceCache.h"
+#include "src/gpu/ganesh/GrSurface.h"
+#include "src/gpu/ganesh/GrTexture.h"
+
+#include <chrono>
+#include <functional>
+
+class GrResourceProvider;
+class SkData;
+enum class SkBackingFit;
 
 GrThreadSafeCache::VertexData::~VertexData () {
     this->reset();
@@ -25,7 +44,7 @@ GrThreadSafeCache::~GrThreadSafeCache() {
     this->dropAllRefs();
 }
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
 int GrThreadSafeCache::numEntries() const {
     SkAutoSpinlock lock{fSpinLock};
 
@@ -75,7 +94,7 @@ void GrThreadSafeCache::dropUniqueRefs(GrResourceCache* resourceCache) {
     }
 }
 
-void GrThreadSafeCache::dropUniqueRefsOlderThan(GrStdSteadyClock::time_point purgeTime) {
+void GrThreadSafeCache::dropUniqueRefsOlderThan(skgpu::StdSteadyClock::time_point purgeTime) {
     SkAutoSpinlock lock{fSpinLock};
 
     // Iterate from LRU to MRU
@@ -102,7 +121,7 @@ void GrThreadSafeCache::dropUniqueRefsOlderThan(GrStdSteadyClock::time_point pur
 void GrThreadSafeCache::makeExistingEntryMRU(Entry* entry) {
     SkASSERT(fUniquelyKeyedEntryList.isInList(entry));
 
-    entry->fLastAccess = GrStdSteadyClock::now();
+    entry->fLastAccess = skgpu::StdSteadyClock::now();
     fUniquelyKeyedEntryList.remove(entry);
     fUniquelyKeyedEntryList.addToHead(entry);
 }
@@ -160,7 +179,7 @@ GrThreadSafeCache::Entry* GrThreadSafeCache::getEntry(const skgpu::UniqueKey& ke
 }
 
 GrThreadSafeCache::Entry* GrThreadSafeCache::makeNewEntryMRU(Entry* entry) {
-    entry->fLastAccess = GrStdSteadyClock::now();
+    entry->fLastAccess = skgpu::StdSteadyClock::now();
     fUniquelyKeyedEntryList.addToHead(entry);
     fUniquelyKeyedEntryMap.add(entry);
     return entry;
@@ -335,7 +354,7 @@ GrThreadSafeCache::CreateLazyView(GrDirectContext* dContext,
 
     sk_sp<Trampoline> trampoline(new Trampoline);
 
-    GrProxyProvider::TextureInfo texInfo{ GrMipmapped::kNo, GrTextureType::k2D };
+    GrProxyProvider::TextureInfo texInfo{skgpu::Mipmapped::kNo, GrTextureType::k2D};
 
     sk_sp<GrRenderTargetProxy> proxy = proxyProvider->createLazyRenderTargetProxy(
             [trampoline](
@@ -357,13 +376,13 @@ GrThreadSafeCache::CreateLazyView(GrDirectContext* dContext,
             &texInfo,
             GrMipmapStatus::kNotAllocated,
             fit,
-            SkBudgeted::kYes,
+            skgpu::Budgeted::kYes,
             GrProtected::kNo,
             /* wrapsVkSecondaryCB */ false,
             GrSurfaceProxy::UseAllocator::kYes);
 
     // TODO: It seems like this 'newCT' usage should be 'origCT' but this is
-    // what skgpu::v1::SurfaceDrawContext::MakeWithFallback does
+    // what skgpu::ganesh::SurfaceDrawContext::MakeWithFallback does
     skgpu::Swizzle swizzle = dContext->priv().caps()->getReadSwizzle(format, newCT);
 
     return {{std::move(proxy), origin, swizzle}, std::move(trampoline)};

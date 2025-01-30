@@ -4,11 +4,23 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
-#include "src/gpu/ganesh/GrCpuBuffer.h"
-#include "src/gpu/ganesh/gl/GrGLBuffer.h"
-#include "src/gpu/ganesh/gl/GrGLGpu.h"
 #include "src/gpu/ganesh/gl/GrGLVertexArray.h"
+
+#include "include/core/SkTypes.h"
+#include "include/gpu/ganesh/gl/GrGLFunctions.h"
+#include "include/gpu/ganesh/gl/GrGLInterface.h"
+#include "src/core/SkSLTypeShared.h"
+#include "src/gpu/ganesh/GrBuffer.h"
+#include "src/gpu/ganesh/GrCaps.h"
+#include "src/gpu/ganesh/GrCpuBuffer.h"
+#include "src/gpu/ganesh/GrGpuBuffer.h"
+#include "src/gpu/ganesh/GrShaderCaps.h"
+#include "src/gpu/ganesh/gl/GrGLBuffer.h"
+#include "src/gpu/ganesh/gl/GrGLDefines.h"
+#include "src/gpu/ganesh/gl/GrGLGpu.h"
+#include "src/gpu/ganesh/gl/GrGLUtil.h"
+
+#include <cstdint>
 
 struct AttribLayout {
     bool        fNormalized;  // Only used by floating point types.
@@ -74,7 +86,7 @@ static AttribLayout attrib_layout(GrVertexAttribType type) {
             return {true, 4, GR_GL_UNSIGNED_SHORT};
     }
     SK_ABORT("Unknown vertex attrib type");
-};
+}
 
 void GrGLAttribArrayState::set(GrGLGpu* gpu,
                                int index,
@@ -84,7 +96,7 @@ void GrGLAttribArrayState::set(GrGLGpu* gpu,
                                GrGLsizei stride,
                                size_t offsetInBytes,
                                int divisor) {
-    SkASSERT(index >= 0 && index < fAttribArrayStates.count());
+    SkASSERT(index >= 0 && index < fAttribArrayStates.size());
     SkASSERT(0 == divisor || gpu->caps()->drawInstancedSupport());
     AttribArrayState* array = &fAttribArrayStates[index];
     const char* offsetAsPtr;
@@ -121,7 +133,7 @@ void GrGLAttribArrayState::set(GrGLGpu* gpu,
                                                                stride,
                                                                offsetAsPtr));
         } else {
-            SkASSERT(gpu->caps()->shaderCaps()->integerSupport());
+            SkASSERT(gpu->caps()->shaderCaps()->fIntegerSupport);
             SkASSERT(!layout.fNormalized);
             GR_GL_CALL(gpu->glInterface(), VertexAttribIPointer(index,
                                                                 layout.fCount,
@@ -143,7 +155,7 @@ void GrGLAttribArrayState::set(GrGLGpu* gpu,
 
 void GrGLAttribArrayState::enableVertexArrays(const GrGLGpu* gpu, int enabledCount,
                                               GrPrimitiveRestart enablePrimitiveRestart) {
-    SkASSERT(enabledCount <= fAttribArrayStates.count());
+    SkASSERT(enabledCount <= fAttribArrayStates.size());
 
     if (!fEnableStateIsValid || enabledCount != fNumEnabledArrays) {
         int firstIdxToEnable = fEnableStateIsValid ? fNumEnabledArrays : 0;
@@ -151,7 +163,7 @@ void GrGLAttribArrayState::enableVertexArrays(const GrGLGpu* gpu, int enabledCou
             GR_GL_CALL(gpu->glInterface(), EnableVertexAttribArray(i));
         }
 
-        int endIdxToDisable = fEnableStateIsValid ? fNumEnabledArrays : fAttribArrayStates.count();
+        int endIdxToDisable = fEnableStateIsValid ? fNumEnabledArrays : fAttribArrayStates.size();
         for (int i = enabledCount; i < endIdxToDisable; ++i) {
             GR_GL_CALL(gpu->glInterface(), DisableVertexAttribArray(i));
         }

@@ -18,7 +18,7 @@
 #include "include/core/SkScalar.h"
 #include "include/core/SkStream.h"
 #include "include/core/SkTypeface.h"
-#include "include/private/SkOnce.h"
+#include "include/private/base/SkOnce.h"
 #include "src/utils/mac/SkUniqueCFRef.h"
 
 #ifdef SK_BUILD_FOR_MAC
@@ -55,12 +55,6 @@ struct CTFontVariation {
     OpszVariation opsz;
 };
 
-CTFontVariation SkCTVariationFromSkFontArguments(CTFontRef ct, CFArrayRef ctAxes,
-                                                 const SkFontArguments& args);
-
-SkUniqueCFRef<CTFontRef> SkCTFontCreateExactCopy(CTFontRef baseFont, CGFloat textSize,
-                                                 OpszVariation opsz);
-
 SkFontStyle SkCTFontDescriptorGetSkFontStyle(CTFontDescriptorRef desc, bool fromDataProvider);
 
 CGFloat SkCTFontCTWeightForCSSWeight(int fontstyleWeight);
@@ -87,6 +81,10 @@ public:
     static sk_sp<SkTypeface> Make(SkUniqueCFRef<CTFontRef> font,
                                   OpszVariation opszVariation,
                                   std::unique_ptr<SkStreamAsset> providedData);
+
+    static constexpr SkTypeface::FactoryId FactoryId = SkSetFourByteTag('c','t','x','t');
+    static sk_sp<SkTypeface> SK_SPI MakeFromStream(std::unique_ptr<SkStreamAsset>,
+                                                   const SkFontArguments&);
 
     SkUniqueCFRef<CTFontRef> fFontRef;
     const OpszVariation fOpszVariation;

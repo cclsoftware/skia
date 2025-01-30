@@ -8,8 +8,7 @@
 #ifndef GrOnFlushResourceProvider_DEFINED
 #define GrOnFlushResourceProvider_DEFINED
 
-#include "include/core/SkSpan.h"
-#include "src/gpu/ganesh/GrDeferredUpload.h"
+#include "src/gpu/AtlasTypes.h"
 
 class GrCaps;
 class GrDrawingManager;
@@ -26,18 +25,17 @@ public:
 
     /*
      * The preFlush callback allows subsystems (e.g., text, path renderers) to create atlases
-     * for a specific flush. All the GrRenderTask IDs required for the flush are passed into the
-     * callback.
+     * for a specific flush.
+     *
+     * Returns true on success; false on memory allocation failure
      */
-    virtual void preFlush(GrOnFlushResourceProvider*, SkSpan<const uint32_t> renderTaskIDs) = 0;
+    virtual bool preFlush(GrOnFlushResourceProvider*) = 0;
 
     /**
-     * Called once flushing is complete and all renderTasks indicated by preFlush have been executed
-     * and released. startTokenForNextFlush can be used to track resources used in the current
-     * flush.
+     * Called once flushing is complete. startTokenForNextFlush can be used to track resources
+     * used in the current flush.
      */
-    virtual void postFlush(GrDeferredUploadToken startTokenForNextFlush,
-                           SkSpan<const uint32_t> renderTaskIDs) {}
+    virtual void postFlush(skgpu::AtlasToken startTokenForNextFlush) {}
 
     /**
      * Tells the callback owner to hold onto this object when freeing GPU resources.
@@ -54,9 +52,13 @@ class GrOnFlushResourceProvider {
 public:
     explicit GrOnFlushResourceProvider(GrDrawingManager* drawingMgr) : fDrawingMgr(drawingMgr) {}
 
-    bool instatiateProxy(GrSurfaceProxy*);
+    [[nodiscard]] bool instantiateProxy(GrSurfaceProxy*);
 
     const GrCaps* caps() const;
+
+#if defined(GPU_TEST_UTILS)
+    bool failFlushTimeCallbacks() const;
+#endif
 
 private:
     GrOnFlushResourceProvider(const GrOnFlushResourceProvider&) = delete;

@@ -8,9 +8,16 @@
 #ifndef skgpu_graphite_render_MiddleOutFanRenderStep_DEFINED
 #define skgpu_graphite_render_MiddleOutFanRenderStep_DEFINED
 
+#include "src/base/SkVx.h"
 #include "src/gpu/graphite/Renderer.h"
 
+#include <string>
+
 namespace skgpu::graphite {
+
+class DrawParams;
+class DrawWriter;
+class PipelineDataGatherer;
 
 class MiddleOutFanRenderStep final : public RenderStep {
 public:
@@ -21,9 +28,9 @@ public:
 
     ~MiddleOutFanRenderStep() override;
 
-    const char* vertexSkSL() const override;
-    void writeVertices(DrawWriter*, const DrawGeometry&) const override;
-    void writeUniforms(const DrawGeometry&, SkPipelineDataGatherer*) const override;
+    std::string vertexSkSL() const override;
+    void writeVertices(DrawWriter*, const DrawParams&, skvx::uint2 ssboIndices) const override;
+    void writeUniformsAndTextures(const DrawParams&, PipelineDataGatherer*) const override;
 };
 
 }  // namespace skgpu::graphite

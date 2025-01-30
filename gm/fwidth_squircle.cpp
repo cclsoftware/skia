@@ -14,10 +14,11 @@
 #include "include/core/SkRect.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkString.h"
-#include "include/gpu/GrRecordingContext.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
 #include "include/private/gpu/ganesh/GrTypesPriv.h"
 #include "src/core/SkCanvasPriv.h"
 #include "src/gpu/ganesh/GrBuffer.h"
+#include "src/gpu/ganesh/GrCanvas.h"
 #include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
 #include "src/gpu/ganesh/GrGeometryProcessor.h"
@@ -33,6 +34,7 @@
 #include "src/gpu/ganesh/GrResourceProvider.h"
 #include "src/gpu/ganesh/GrShaderCaps.h"
 #include "src/gpu/ganesh/GrShaderVar.h"
+#include "src/gpu/ganesh/SurfaceDrawContext.h"
 #include "src/gpu/ganesh/glsl/GrGLSLFragmentShaderBuilder.h"
 #include "src/gpu/ganesh/glsl/GrGLSLProgramDataManager.h"
 #include "src/gpu/ganesh/glsl/GrGLSLUniformHandler.h"
@@ -40,7 +42,6 @@
 #include "src/gpu/ganesh/glsl/GrGLSLVertexGeoBuilder.h"
 #include "src/gpu/ganesh/ops/GrDrawOp.h"
 #include "src/gpu/ganesh/ops/GrOp.h"
-#include "src/gpu/ganesh/v1/SurfaceDrawContext_v1.h"
 #include "tools/gpu/ProxyUtils.h"
 
 #include <memory>
@@ -224,8 +225,10 @@ private:
             {-1, +1},
             {+1, +1},
         };
-        fVertexBuffer = flushState->resourceProvider()->createBuffer(
-                sizeof(vertices), GrGpuBufferType::kVertex, kStatic_GrAccessPattern, vertices);
+        fVertexBuffer = flushState->resourceProvider()->createBuffer(vertices,
+                                                                     sizeof(vertices),
+                                                                     GrGpuBufferType::kVertex,
+                                                                     kStatic_GrAccessPattern);
     }
 
     void onExecute(GrOpFlushState* flushState, const SkRect& chainBounds) final {
@@ -269,12 +272,12 @@ private:
 namespace skiagm {
 
 DEF_SIMPLE_GPU_GM_CAN_FAIL(fwidth_squircle, rContext, canvas, errorMsg, 200, 200) {
-    if (!rContext->priv().caps()->shaderCaps()->shaderDerivativeSupport()) {
+    if (!rContext->priv().caps()->shaderCaps()->fShaderDerivativeSupport) {
         *errorMsg = "Shader derivatives not supported.";
         return DrawResult::kSkip;
     }
 
-    auto sdc = SkCanvasPriv::TopDeviceSurfaceDrawContext(canvas);
+    auto sdc = skgpu::ganesh::TopDeviceSurfaceDrawContext(canvas);
     if (!sdc) {
         *errorMsg = GM::kErrorMsg_DrawSkippedGpuOnly;
         return DrawResult::kSkip;

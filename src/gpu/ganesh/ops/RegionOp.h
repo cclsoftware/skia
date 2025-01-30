@@ -4,20 +4,19 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #ifndef RegionOp_DEFINED
 #define RegionOp_DEFINED
 
-#include "include/private/gpu/ganesh/GrTypesPriv.h"
 #include "src/gpu/ganesh/ops/GrOp.h"
 
 class GrPaint;
 class GrRecordingContext;
-struct GrUserStencilSettings;
 class SkMatrix;
 class SkRegion;
+enum class GrAAType : unsigned int;
+struct GrUserStencilSettings;
 
-namespace skgpu::v1::RegionOp {
+namespace skgpu::ganesh::RegionOp {
 
 /** GrAAType must be kNone or kMSAA. */
 GrOp::Owner Make(GrRecordingContext*,
@@ -27,6 +26,6 @@ GrOp::Owner Make(GrRecordingContext*,
                  GrAAType,
                  const GrUserStencilSettings* stencilSettings = nullptr);
 
-} // namespace skgpu::v1::RegionOp
+}  // namespace skgpu::ganesh::RegionOp
 
 #endif // RegionOp_DEFINED

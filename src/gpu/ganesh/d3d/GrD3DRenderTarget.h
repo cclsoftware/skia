@@ -12,7 +12,7 @@
 #include "src/gpu/ganesh/GrRenderTarget.h"
 #include "src/gpu/ganesh/d3d/GrD3DTextureResource.h"
 
-#include "include/gpu/d3d/GrD3DTypes.h"
+#include "include/gpu/ganesh/d3d/GrD3DTypes.h"
 #include "src/gpu/ganesh/GrGpu.h"
 #include "src/gpu/ganesh/d3d/GrD3DDescriptorHeap.h"
 #include "src/gpu/ganesh/d3d/GrD3DResourceProvider.h"
@@ -83,9 +83,11 @@ protected:
             // Add one to account for the resolved VkImage.
             numColorSamples += 1;
         }
-        return GrSurface::ComputeSize(this->backendFormat(), this->dimensions(),
-                                      numColorSamples, GrMipmapped::kNo);
+        return GrSurface::ComputeSize(
+                this->backendFormat(), this->dimensions(), numColorSamples, skgpu::Mipmapped::kNo);
     }
+
+    void onSetLabel() override;
 
 private:
     // Extra param to disambiguate from constructor used by subclasses.
@@ -118,7 +120,7 @@ private:
 
     // In Direct3D we call the release proc after we are finished with the underlying
     // GrD3DTextureResource::Resource object (which occurs after the GPU finishes all work on it).
-    void onSetRelease(sk_sp<skgpu::RefCntedCallback> releaseHelper) override {
+    void onSetRelease(sk_sp<RefCntedReleaseProc> releaseHelper) override {
         // Forward the release proc on to GrD3DTextureResource
         this->setResourceRelease(std::move(releaseHelper));
     }

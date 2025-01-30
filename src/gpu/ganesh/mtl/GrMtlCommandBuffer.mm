@@ -13,6 +13,7 @@
 #include "src/gpu/ganesh/mtl/GrMtlPipelineState.h"
 #include "src/gpu/ganesh/mtl/GrMtlRenderCommandEncoder.h"
 #include "src/gpu/ganesh/mtl/GrMtlSemaphore.h"
+#include "src/gpu/mtl/MtlUtilsPriv.h"
 
 #if !__has_feature(objc_arc)
 #error This file must be compiled with Arc. Use -fobjc-arc flag
@@ -21,12 +22,18 @@
 GR_NORETAIN_BEGIN
 
 sk_sp<GrMtlCommandBuffer> GrMtlCommandBuffer::Make(id<MTLCommandQueue> queue) {
-#ifdef SK_BUILD_FOR_IOS
-    if (GrMtlIsAppInBackground()) {
-        NSLog(@"GrMtlCommandBuffer: WARNING: Creating MTLCommandBuffer while in background.");
+    id<MTLCommandBuffer> mtlCommandBuffer;
+#if GR_METAL_SDK_VERSION >= 230
+    if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
+        MTLCommandBufferDescriptor* desc = [[MTLCommandBufferDescriptor alloc] init];
+        desc.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
+        mtlCommandBuffer = [queue commandBufferWithDescriptor:desc];
+    } else {
+        mtlCommandBuffer = [queue commandBuffer];
     }
+#else
+    mtlCommandBuffer = [queue commandBuffer];
 #endif
-    id<MTLCommandBuffer> mtlCommandBuffer = [queue commandBuffer];
     if (nil == mtlCommandBuffer) {
         return nullptr;
     }
@@ -49,9 +56,9 @@ GrMtlCommandBuffer::~GrMtlCommandBuffer() {
 void GrMtlCommandBuffer::releaseResources() {
     TRACE_EVENT0("skia.gpu", TRACE_FUNC);
 
-    fTrackedResources.reset();
-    fTrackedGrBuffers.reset();
-    fTrackedGrSurfaces.reset();
+    fTrackedResources.clear();
+    fTrackedGrBuffers.clear();
+    fTrackedGrSurfaces.clear();
 }
 
 id<MTLBlitCommandEncoder> GrMtlCommandBuffer::getBlitCommandEncoder() {
@@ -64,13 +71,6 @@ id<MTLBlitCommandEncoder> GrMtlCommandBuffer::getBlitCommandEncoder() {
         NSLog(@"GrMtlCommandBuffer: tried to create MTLBlitCommandEncoder while in invalid state.");
         return nullptr;
     }
-#ifdef SK_BUILD_FOR_IOS
-    if (GrMtlIsAppInBackground()) {
-        fActiveBlitCommandEncoder = nil;
-        NSLog(@"GrMtlCommandBuffer: tried to create MTLBlitCommandEncoder while in background.");
-        return nil;
-    }
-#endif
     fActiveBlitCommandEncoder = [fCmdBuffer blitCommandEncoder];
     fHasWork = true;
 
@@ -167,13 +167,6 @@ GrMtlRenderCommandEncoder* GrMtlCommandBuffer::getRenderCommandEncoder(
         NSLog(@"GrMtlCommandBuffer: tried to create MTLRenderCommandEncoder while in bad state.");
         return nullptr;
     }
-#ifdef SK_BUILD_FOR_IOS
-    if (GrMtlIsAppInBackground()) {
-        fActiveRenderCommandEncoder = nullptr;
-        NSLog(@"GrMtlCommandBuffer: tried to create MTLRenderCommandEncoder while in background.");
-        return nullptr;
-    }
-#endif
     fActiveRenderCommandEncoder = GrMtlRenderCommandEncoder::Make(
             [fCmdBuffer renderCommandEncoderWithDescriptor:descriptor]);
     if (opsRenderPass) {
@@ -187,32 +180,29 @@ GrMtlRenderCommandEncoder* GrMtlCommandBuffer::getRenderCommandEncoder(
 
 bool GrMtlCommandBuffer::commit(bool waitUntilCompleted) {
     this->endAllEncoding();
-    if (fCmdBuffer.status != MTLCommandBufferStatusNotEnqueued) {
+    if ([fCmdBuffer status] != MTLCommandBufferStatusNotEnqueued) {
         NSLog(@"GrMtlCommandBuffer: Tried to commit command buffer while in invalid state.\n");
         return false;
     }
-#ifdef SK_BUILD_FOR_IOS
-    if (GrMtlIsAppInBackground()) {
-        NSLog(@"GrMtlCommandBuffer: Tried to commit command buffer while in background.\n");
-        return false;
-    }
-#endif
     [fCmdBuffer commit];
     if (waitUntilCompleted) {
         this->waitUntilCompleted();
-    }
-
-    if (fCmdBuffer.status == MTLCommandBufferStatusError) {
-#ifdef SK_DEBUG
-        NSString* description = [[fCmdBuffer error] localizedDescription];
-        const char* errorString = [description UTF8String];
-        SkDebugf("Error submitting command buffer: %s\n", errorString);
-#else
-        SkDebugf("Error submitting command buffer\n");
+#if defined(SK_BUILD_FOR_IOS) && defined(SK_METAL_WAIT_UNTIL_SCHEDULED)
+    // If iOS goes into the background we need to make sure all command buffers are scheduled first.
+    // We don't have a way of detecting background transition so this guarantees it.
+    } else {
+        [fCmdBuffer waitUntilScheduled];
 #endif
     }
 
-    return (fCmdBuffer.status != MTLCommandBufferStatusError);
+    if ([fCmdBuffer status] == MTLCommandBufferStatusError) {
+        SkDebugf("Error submitting command buffer.\n");
+        if (NSError* error = [fCmdBuffer error]) {
+            NSLog(@"%@", error);
+        }
+    }
+
+    return ([fCmdBuffer status] != MTLCommandBufferStatusError);
 }
 
 void GrMtlCommandBuffer::endAllEncoding() {
@@ -230,7 +220,7 @@ void GrMtlCommandBuffer::endAllEncoding() {
 void GrMtlCommandBuffer::encodeSignalEvent(sk_sp<GrMtlEvent> event, uint64_t eventValue) {
     SkASSERT(fCmdBuffer);
     this->endAllEncoding(); // ensure we don't have any active command encoders
-    if (@available(macOS 10.14, iOS 12.0, *)) {
+    if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, *)) {
         [fCmdBuffer encodeSignalEvent:event->mtlEvent() value:eventValue];
         this->addResource(std::move(event));
     }
@@ -241,7 +231,7 @@ void GrMtlCommandBuffer::encodeWaitForEvent(sk_sp<GrMtlEvent> event, uint64_t ev
     SkASSERT(fCmdBuffer);
     this->endAllEncoding(); // ensure we don't have any active command encoders
                             // TODO: not sure if needed but probably
-    if (@available(macOS 10.14, iOS 12.0, *)) {
+    if (@available(macOS 10.14, iOS 12.0, tvOS 12.0, *)) {
         [fCmdBuffer encodeWaitForEvent:event->mtlEvent() value:eventValue];
         this->addResource(std::move(event));
     }

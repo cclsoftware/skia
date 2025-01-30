@@ -23,13 +23,14 @@
 #include "include/core/SkTileMode.h"
 #include "include/core/SkTypes.h"
 #include "include/effects/SkGradientShader.h"
-#include "include/utils/SkRandom.h"
-#include "src/core/SkMathPriv.h"
+#include "src/base/SkMathPriv.h"
+#include "src/base/SkRandom.h"
+#include "tools/GpuToolUtils.h"
 #include "tools/ToolUtils.h"
 
 static sk_sp<SkImage> makebm(int w, int h) {
     SkImageInfo info = SkImageInfo::MakeN32Premul(w, h);
-    auto surface(SkSurface::MakeRaster(info));
+    auto surface(SkSurfaces::Raster(info));
     SkCanvas* canvas = surface->getCanvas();
 
     const SkScalar wScalar = SkIntToScalar(w);
@@ -52,7 +53,7 @@ static sk_sp<SkImage> makebm(int w, int h) {
                                       5 * SK_Scalar1 / 6,
                                       SK_Scalar1};
 
-    SkASSERT(SK_ARRAY_COUNT(colors) == SK_ARRAY_COUNT(pos));
+    SkASSERT(std::size(colors) == std::size(pos));
     SkPaint     paint;
     SkRect rect = SkRect::MakeWH(wScalar, hScalar);
     SkMatrix mat = SkMatrix::I();
@@ -60,7 +61,7 @@ static sk_sp<SkImage> makebm(int w, int h) {
         paint.setShader(SkGradientShader::MakeRadial(
                         pt, radius,
                         colors, pos,
-                        SK_ARRAY_COUNT(colors),
+                        std::size(colors),
                         SkTileMode::kRepeat,
                         0, &mat));
         canvas->drawRect(rect, paint);
@@ -85,9 +86,9 @@ public:
     }
 
 protected:
-    SkString onShortName() override { return fName; }
+    SkString getName() const override { return fName; }
 
-    SkISize onISize() override { return SkISize::Make(gSize, gSize); }
+    SkISize getISize() override { return SkISize::Make(gSize, gSize); }
 
     void onDraw(SkCanvas* canvas) override {
         if (nullptr == fImage) {

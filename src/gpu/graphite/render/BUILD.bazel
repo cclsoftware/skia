@@ -1,111 +1,58 @@
-load("//bazel:macros.bzl", "exports_files_legacy", "generated_cc_atom")
+load("//bazel:skia_rules.bzl", "skia_filegroup", "split_srcs_and_hdrs")
 
-exports_files_legacy()
+package(
+    default_applicable_licenses = ["//:license"],
+)
 
 licenses(["notice"])
 
-generated_cc_atom(
-    name = "StencilAndFillPathRenderer_src",
-    srcs = ["StencilAndFillPathRenderer.cpp"],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":CoverBoundsRenderStep_hdr",
-        ":MiddleOutFanRenderStep_hdr",
-        ":StencilAndCoverDSS_hdr",
-        ":TessellateCurvesRenderStep_hdr",
-        ":TessellateWedgesRenderStep_hdr",
-        "//include/core:SkPathTypes_hdr",
-        "//src/gpu/graphite:Renderer_hdr",
-    ],
+CORE_FILES = [
+    "AnalyticBlurRenderStep.cpp",
+    "AnalyticBlurRenderStep.h",
+    "AnalyticRRectRenderStep.cpp",
+    "AnalyticRRectRenderStep.h",
+    "BitmapTextRenderStep.cpp",
+    "BitmapTextRenderStep.h",
+    "CircularArcRenderStep.cpp",
+    "CircularArcRenderStep.h",
+    "CommonDepthStencilSettings.h",
+    "CoverBoundsRenderStep.cpp",
+    "CoverBoundsRenderStep.h",
+    "CoverageMaskRenderStep.cpp",
+    "CoverageMaskRenderStep.h",
+    "DynamicInstancesPatchAllocator.h",
+    "GraphiteVertexFiller.cpp",
+    "MiddleOutFanRenderStep.cpp",
+    "MiddleOutFanRenderStep.h",
+    "PerEdgeAAQuadRenderStep.cpp",
+    "PerEdgeAAQuadRenderStep.h",
+    "SDFTextLCDRenderStep.cpp",
+    "SDFTextLCDRenderStep.h",
+    "SDFTextRenderStep.cpp",
+    "SDFTextRenderStep.h",
+    "TessellateCurvesRenderStep.cpp",
+    "TessellateCurvesRenderStep.h",
+    "TessellateStrokesRenderStep.cpp",
+    "TessellateStrokesRenderStep.h",
+    "TessellateWedgesRenderStep.cpp",
+    "TessellateWedgesRenderStep.h",
+    "VerticesRenderStep.cpp",
+    "VerticesRenderStep.h",
+]
+
+split_srcs_and_hdrs(
+    name = "core",
+    files = CORE_FILES,
 )
 
-generated_cc_atom(
-    name = "CoverBoundsRenderStep_hdr",
-    hdrs = ["CoverBoundsRenderStep.h"],
-    visibility = ["//:__subpackages__"],
-    deps = ["//src/gpu/graphite:Renderer_hdr"],
+skia_filegroup(
+    name = "render_hdrs",
+    srcs = [":core_hdrs"],
+    visibility = ["//src/gpu/graphite:__pkg__"],
 )
 
-generated_cc_atom(
-    name = "CoverBoundsRenderStep_src",
-    srcs = ["CoverBoundsRenderStep.cpp"],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":CoverBoundsRenderStep_hdr",
-        ":StencilAndCoverDSS_hdr",
-        "//src/gpu/graphite:DrawGeometry_hdr",
-        "//src/gpu/graphite:DrawWriter_hdr",
-    ],
-)
-
-generated_cc_atom(
-    name = "MiddleOutFanRenderStep_hdr",
-    hdrs = ["MiddleOutFanRenderStep.h"],
-    visibility = ["//:__subpackages__"],
-    deps = ["//src/gpu/graphite:Renderer_hdr"],
-)
-
-generated_cc_atom(
-    name = "MiddleOutFanRenderStep_src",
-    srcs = ["MiddleOutFanRenderStep.cpp"],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":MiddleOutFanRenderStep_hdr",
-        ":StencilAndCoverDSS_hdr",
-        "//src/gpu/graphite:DrawGeometry_hdr",
-        "//src/gpu/graphite:DrawWriter_hdr",
-        "//src/gpu/tessellate:FixedCountBufferUtils_hdr",
-        "//src/gpu/tessellate:MiddleOutPolygonTriangulator_hdr",
-    ],
-)
-
-generated_cc_atom(
-    name = "StencilAndCoverDSS_hdr",
-    hdrs = ["StencilAndCoverDSS.h"],
-    visibility = ["//:__subpackages__"],
-    deps = ["//src/gpu/graphite:DrawTypes_hdr"],
-)
-
-generated_cc_atom(
-    name = "TessellateCurvesRenderStep_hdr",
-    hdrs = ["TessellateCurvesRenderStep.h"],
-    visibility = ["//:__subpackages__"],
-    deps = ["//src/gpu/graphite:Renderer_hdr"],
-)
-
-generated_cc_atom(
-    name = "TessellateCurvesRenderStep_src",
-    srcs = ["TessellateCurvesRenderStep.cpp"],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":StencilAndCoverDSS_hdr",
-        ":TessellateCurvesRenderStep_hdr",
-        "//src/gpu/graphite:DrawGeometry_hdr",
-        "//src/gpu/graphite:DrawWriter_hdr",
-        "//src/gpu/tessellate:AffineMatrix_hdr",
-        "//src/gpu/tessellate:FixedCountBufferUtils_hdr",
-        "//src/gpu/tessellate:PatchWriter_hdr",
-    ],
-)
-
-generated_cc_atom(
-    name = "TessellateWedgesRenderStep_hdr",
-    hdrs = ["TessellateWedgesRenderStep.h"],
-    visibility = ["//:__subpackages__"],
-    deps = ["//src/gpu/graphite:Renderer_hdr"],
-)
-
-generated_cc_atom(
-    name = "TessellateWedgesRenderStep_src",
-    srcs = ["TessellateWedgesRenderStep.cpp"],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":TessellateWedgesRenderStep_hdr",
-        "//src/gpu/graphite:DrawGeometry_hdr",
-        "//src/gpu/graphite:DrawWriter_hdr",
-        "//src/gpu/tessellate:AffineMatrix_hdr",
-        "//src/gpu/tessellate:FixedCountBufferUtils_hdr",
-        "//src/gpu/tessellate:MidpointContourParser_hdr",
-        "//src/gpu/tessellate:PatchWriter_hdr",
-    ],
+skia_filegroup(
+    name = "render_srcs",
+    srcs = [":core_srcs"],
+    visibility = ["//src/gpu/graphite:__pkg__"],
 )

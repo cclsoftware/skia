@@ -8,8 +8,8 @@
 #include "tools/gpu/ProxyUtils.h"
 
 #include "include/core/SkColor.h"
-#include "include/gpu/GrBackendSurface.h"
-#include "include/gpu/GrDirectContext.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
 #include "include/private/gpu/ganesh/GrImageContext.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
 #include "src/gpu/ganesh/GrDrawingManager.h"
@@ -20,9 +20,10 @@
 #include "src/gpu/ganesh/GrProxyProvider.h"
 #include "src/gpu/ganesh/SkGr.h"
 #include "src/gpu/ganesh/SurfaceContext.h"
+#include "src/gpu/ganesh/image/GrImageUtils.h"
 #include "src/image/SkImage_Base.h"
 
-#if SK_GPU_V1
+#if defined(SK_GANESH)
 #include "src/gpu/ganesh/ops/GrSimpleMeshDrawOpHelper.h"
 #endif
 
@@ -41,7 +42,7 @@ GrTextureProxy* GetTextureImageProxy(SkImage* image, GrRecordingContext* rContex
             return nullptr;
         }
     }
-    auto [view, ct] = as_IB(image)->asView(rContext, GrMipmapped::kNo);
+    auto [view, ct] = skgpu::ganesh::AsView(rContext, image, skgpu::Mipmapped::kNo);
     if (!view) {
         // With the above checks we expect this to succeed unless there is a context mismatch.
         SkASSERT(!image->isValid(rContext));
@@ -73,10 +74,11 @@ GrSurfaceProxyView MakeTextureProxyViewFromData(GrDirectContext* dContext,
                                                           pixmap.dimensions(),
                                                           renderable,
                                                           /*sample count*/ 1,
-                                                          GrMipmapped::kNo,
+                                                          skgpu::Mipmapped::kNo,
                                                           SkBackingFit::kExact,
-                                                          SkBudgeted::kYes,
-                                                          GrProtected::kNo);
+                                                          skgpu::Budgeted::kYes,
+                                                          GrProtected::kNo,
+                                                          /*label=*/"TextureProxyViewFromData");
     if (!proxy) {
         return {};
     }
@@ -91,7 +93,7 @@ GrSurfaceProxyView MakeTextureProxyViewFromData(GrDirectContext* dContext,
     return sContext->readSurfaceView();
 }
 
-#if SK_GPU_V1
+#if defined(SK_GANESH)
 GrProgramInfo* CreateProgramInfo(const GrCaps* caps,
                                  SkArenaAlloc* arena,
                                  const GrSurfaceProxyView& writeView,
@@ -122,6 +124,6 @@ GrProgramInfo* CreateProgramInfo(const GrCaps* caps,
                                                        primitiveType, renderPassXferBarriers,
                                                        colorLoadOp, flags, stencilSettings);
 }
-#endif // SK_GPU_V1
+#endif // defined(SK_GANESH)
 
 }  // namespace sk_gpu_test

@@ -7,14 +7,27 @@
 
 #include "src/gpu/ganesh/ops/StrokeTessellateOp.h"
 
-#include "src/core/SkMathPriv.h"
-#include "src/core/SkPathPriv.h"
+#include "include/core/SkColor.h"
+#include "include/core/SkPath.h"
+#include "include/core/SkRect.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
+#include "src/base/SkArenaAlloc.h"
 #include "src/gpu/ganesh/GrAppliedClip.h"
+#include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrOpFlushState.h"
+#include "src/gpu/ganesh/GrPaint.h"
+#include "src/gpu/ganesh/GrProcessorAnalysis.h"
+#include "src/gpu/ganesh/GrProgramInfo.h"
 #include "src/gpu/ganesh/GrRecordingContextPriv.h"
-#include "src/gpu/ganesh/tessellate/shaders/GrStrokeTessellationShader.h"
+#include "src/gpu/ganesh/GrRenderTargetProxy.h"
+#include "src/gpu/ganesh/GrShaderCaps.h"
+#include "src/gpu/ganesh/GrSurfaceProxyView.h"
+#include "src/gpu/ganesh/GrUserStencilSettings.h"
+#include "src/gpu/ganesh/tessellate/GrStrokeTessellationShader.h"
 
-namespace skgpu::v1 {
+#include <utility>
+
+namespace skgpu::ganesh {
 
 StrokeTessellateOp::StrokeTessellateOp(GrAAType aaType, const SkMatrix& viewMatrix,
                                        const SkPath& path, const SkStrokeRec& stroke,
@@ -59,7 +72,7 @@ GrProcessorSet::Analysis StrokeTessellateOp::finalize(const GrCaps& caps,
                                                       GrClampType clampType) {
     // Make sure the finalize happens before combining. We might change fNeedsStencil here.
     SkASSERT(fPathStrokeList.fNext == nullptr);
-    if (!caps.shaderCaps()->infinitySupport()) {
+    if (!caps.shaderCaps()->fInfinitySupport) {
         // The GPU can't infer curve type based in infinity, so we need to send in an attrib
         // explicitly stating the curve type.
         fPatchAttribs |= PatchAttribs::kExplicitCurveType;
@@ -91,7 +104,7 @@ GrOp::CombineResult StrokeTessellateOp::onCombineIfPossible(GrOp* grOp, SkArenaA
 
     auto combinedAttribs = fPatchAttribs | op->fPatchAttribs;
     if (!(combinedAttribs & PatchAttribs::kStrokeParams) &&
-        !StrokeParams::StrokesHaveEqualParams(this->headStroke(), op->headStroke())) {
+        !tess::StrokesHaveEqualParams(this->headStroke(), op->headStroke())) {
         // The paths have different stroke properties. We will need to enable dynamic stroke if we
         // still decide to combine them.
         if (this->headStroke().isHairlineStyle()) {
@@ -106,7 +119,7 @@ GrOp::CombineResult StrokeTessellateOp::onCombineIfPossible(GrOp* grOp, SkArenaA
     }
 
     // Don't actually enable new dynamic state on ops that already have lots of verbs.
-    constexpr static GrTFlagsMask<PatchAttribs> kDynamicStatesMask(PatchAttribs::kStrokeParams |
+    constexpr static SkTFlagsMask<PatchAttribs> kDynamicStatesMask(PatchAttribs::kStrokeParams |
                                                                    PatchAttribs::kColor);
     PatchAttribs neededDynamicStates = combinedAttribs & kDynamicStatesMask;
     if (neededDynamicStates != PatchAttribs::kNone) {
@@ -166,26 +179,25 @@ void StrokeTessellateOp::prePrepareTessellator(GrTessellationShader::ProgramArgs
     auto* pipeline = GrTessellationShader::MakePipeline(args, fAAType, std::move(clip),
                                                         std::move(fProcessors));
 
-    GrStrokeTessellationShader::Mode shaderMode;
-
     fTessellator = arena->make<StrokeTessellator>(fPatchAttribs);
-    shaderMode = GrStrokeTessellationShader::Mode::kFixedCount;
-
     fTessellationShader = args.fArena->make<GrStrokeTessellationShader>(
             *caps.shaderCaps(),
-            shaderMode,
             fPatchAttribs,
             fViewMatrix,
             this->headStroke(),
-            this->headColor(),
-            StrokeTessellator::kMaxParametricSegments_log2);
+            this->headColor());
 
     auto fillStencil = &GrUserStencilSettings::kUnused;
     if (fNeedsStencil) {
         fStencilProgram = GrTessellationShader::MakeProgram(args, fTessellationShader, pipeline,
                                                             &kMarkStencil);
         fillStencil = &kTestAndResetStencil;
-        args.fXferBarrierFlags = GrXferBarrierFlags::kNone;
+        // TODO: Currently if we have a texture barrier for a dst read it will get put in before
+        // both the stencil draw and the fill draw. In reality we only really need the barrier
+        // once to guard the reads of the color buffer in the fill from the previous writes. Maybe
+        // we can investigate how to remove one of these barriers but it is probably not something
+        // that is required a lot and thus the extra barrier shouldn't be too much of a perf hit to
+        // general Skia use.
     }
 
     fFillProgram = GrTessellationShader::MakeProgram(args, fTessellationShader, pipeline,
@@ -219,13 +231,8 @@ void StrokeTessellateOp::onPrepare(GrOpFlushState* flushState) {
                                     &flushState->caps()}, flushState->detachAppliedClip());
     }
     SkASSERT(fTessellator);
-    std::array<float, 2> matrixMinMaxScales;
-    if (!fViewMatrix.getMinMaxScales(matrixMinMaxScales.data())) {
-        matrixMinMaxScales.fill(1);
-    }
     fTessellator->prepare(flushState,
                           fViewMatrix,
-                          matrixMinMaxScales,
                           &fPathStrokeList,
                           fTotalCombinedVerbCnt);
 }
@@ -243,4 +250,4 @@ void StrokeTessellateOp::onExecute(GrOpFlushState* flushState, const SkRect& cha
     }
 }
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh

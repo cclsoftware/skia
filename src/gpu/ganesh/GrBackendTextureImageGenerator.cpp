@@ -4,82 +4,96 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
+#include "src/gpu/ganesh/GrBackendTextureImageGenerator.h"
 
 #include "include/core/SkColorSpace.h"
-#include "include/gpu/GrDirectContext.h"
-#include "include/gpu/GrRecordingContext.h"
-#include "src/core/SkMessageBus.h"
-#include "src/gpu/ganesh/GrBackendTextureImageGenerator.h"
+#include "include/core/SkImageInfo.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkSize.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/RefCntedCallback.h"
+#include "src/gpu/SkBackingFit.h"
+#include "src/gpu/Swizzle.h"
+#include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
 #include "src/gpu/ganesh/GrGpu.h"
+#include "src/gpu/ganesh/GrGpuResourcePriv.h"
 #include "src/gpu/ganesh/GrProxyProvider.h"
 #include "src/gpu/ganesh/GrRecordingContextPriv.h"
 #include "src/gpu/ganesh/GrResourceCache.h"
 #include "src/gpu/ganesh/GrResourceProvider.h"
 #include "src/gpu/ganesh/GrResourceProviderPriv.h"
 #include "src/gpu/ganesh/GrSemaphore.h"
+#include "src/gpu/ganesh/GrSurface.h"
+#include "src/gpu/ganesh/GrSurfaceProxy.h"
 #include "src/gpu/ganesh/GrTexture.h"
-#include "src/gpu/ganesh/GrTextureProxyPriv.h"
+#include "src/gpu/ganesh/GrTextureProxy.h"
 #include "src/gpu/ganesh/SkGr.h"
-#include "src/gpu/ganesh/gl/GrGLTexture.h"
+
+#include <functional>
+#include <utility>
 
 GrBackendTextureImageGenerator::RefHelper::RefHelper(
-                    GrTexture* texture,
-                    GrDirectContext::DirectContextID owningContextID,
-                    std::unique_ptr<GrSemaphore> semaphore)
-        : fOriginalTexture(texture)
+        sk_sp<GrTexture> texture,
+        GrDirectContext::DirectContextID owningContextID,
+        std::unique_ptr<GrSemaphore> semaphore)
+        : fOriginalTexture(std::move(texture))
         , fOwningContextID(owningContextID)
         , fBorrowingContextReleaseProc(nullptr)
         , fSemaphore(std::move(semaphore)) {}
 
 GrBackendTextureImageGenerator::RefHelper::~RefHelper() {
     SkASSERT(!fBorrowingContextID.isValid());
-
     // Generator has been freed, and no one is borrowing the texture. Notify the original cache
     // that it can free the last ref, so it happens on the correct thread.
-    GrTextureFreedMessage msg { fOriginalTexture, fOwningContextID };
-    SkMessageBus<GrTextureFreedMessage, GrDirectContext::DirectContextID>::Post(msg);
+    GrResourceCache::ReturnResourceFromThread(std::move(fOriginalTexture), fOwningContextID);
 }
 
-std::unique_ptr<SkImageGenerator>
-GrBackendTextureImageGenerator::Make(sk_sp<GrTexture> texture, GrSurfaceOrigin origin,
-                                     std::unique_ptr<GrSemaphore> semaphore, SkColorType colorType,
-                                     SkAlphaType alphaType, sk_sp<SkColorSpace> colorSpace) {
+std::unique_ptr<GrTextureGenerator>
+GrBackendTextureImageGenerator::Make(const sk_sp<GrTexture>& texture,
+                                     GrSurfaceOrigin origin,
+                                     std::unique_ptr<GrSemaphore> semaphore,
+                                     SkColorType colorType,
+                                     SkAlphaType alphaType,
+                                     sk_sp<SkColorSpace> colorSpace) {
     GrDirectContext* dContext = texture->getContext();
 
-    // Attach our texture to this context's resource cache. This ensures that deletion will happen
-    // in the correct thread/context. This adds the only ref to the texture that will persist from
-    // this point. That ref will be released when the generator's RefHelper is freed.
-    dContext->priv().getResourceCache()->insertDelayedTextureUnref(texture.get());
-
-    GrBackendTexture backendTexture = texture->getBackendTexture();
-
     if (!dContext->priv().caps()->areColorTypeAndFormatCompatible(
-            SkColorTypeToGrColorType(colorType), backendTexture.getBackendFormat())) {
+                SkColorTypeToGrColorType(colorType), texture->backendFormat())) {
         return nullptr;
     }
 
-    SkImageInfo info = SkImageInfo::Make(texture->width(), texture->height(), colorType, alphaType,
-                                         std::move(colorSpace));
-    return std::unique_ptr<SkImageGenerator>(new GrBackendTextureImageGenerator(
-          info, texture.get(), origin, dContext->directContextID(),
-          std::move(semaphore), backendTexture));
+    SkColorInfo info(colorType, alphaType, std::move(colorSpace));
+    return std::unique_ptr<GrTextureGenerator>(new GrBackendTextureImageGenerator(
+            info,
+            texture,
+            origin,
+            dContext->directContextID(),
+            std::move(semaphore)));
 }
 
 GrBackendTextureImageGenerator::GrBackendTextureImageGenerator(
-                    const SkImageInfo& info,
-                    GrTexture* texture,
-                    GrSurfaceOrigin origin,
-                    GrDirectContext::DirectContextID owningContextID,
-                    std::unique_ptr<GrSemaphore> semaphore,
-                    const GrBackendTexture& backendTex)
-        : INHERITED(info)
+        const SkColorInfo& info,
+        const sk_sp<GrTexture>& texture,
+        GrSurfaceOrigin origin,
+        GrDirectContext::DirectContextID owningContextID,
+        std::unique_ptr<GrSemaphore> semaphore)
+        : INHERITED(SkImageInfo::Make(texture->dimensions(), info))
         , fRefHelper(new RefHelper(texture, owningContextID, std::move(semaphore)))
-        , fBackendTexture(backendTex)
+        , fBackendTexture(texture->getBackendTexture())
         , fSurfaceOrigin(origin) {}
 
 GrBackendTextureImageGenerator::~GrBackendTextureImageGenerator() {
     fRefHelper->unref();
+}
+
+bool GrBackendTextureImageGenerator::onIsProtected() const {
+    return fBackendTexture.isProtected();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -96,10 +110,10 @@ void GrBackendTextureImageGenerator::ReleaseRefHelper_TextureReleaseProc(void* c
 GrSurfaceProxyView GrBackendTextureImageGenerator::onGenerateTexture(
         GrRecordingContext* rContext,
         const SkImageInfo& info,
-        const SkIPoint& origin,
-        GrMipmapped mipmapped,
+        skgpu::Mipmapped mipmapped,
         GrImageTexGenPolicy texGenPolicy) {
     SkASSERT(rContext);
+    SkASSERT_RELEASE(info.dimensions() == fBackendTexture.dimensions());
 
     // We currently limit GrBackendTextureImageGenerators to direct contexts since
     // only Flutter uses them and doesn't use recording/DDL contexts. Ideally, the
@@ -156,8 +170,8 @@ GrSurfaceProxyView GrBackendTextureImageGenerator::onGenerateTexture(
 
     GrColorType grColorType = SkColorTypeToGrColorType(info.colorType());
 
-    GrMipmapped textureIsMipMapped = fBackendTexture.hasMipmaps() ? GrMipmapped::kYes
-                                                                  : GrMipmapped::kNo;
+    skgpu::Mipmapped textureIsMipMapped =
+            fBackendTexture.hasMipmaps() ? skgpu::Mipmapped::kYes : skgpu::Mipmapped::kNo;
 
     // Ganesh assumes that, when wrapping a mipmapped backend texture from a client, that its
     // mipmaps are fully fleshed out.
@@ -211,32 +225,37 @@ GrSurfaceProxyView GrBackendTextureImageGenerator::onGenerateTexture(
                 // proxy.
                 return {std::move(tex), true, GrSurfaceProxy::LazyInstantiationKeyMode::kUnsynced};
             },
-            backendFormat, fBackendTexture.dimensions(), textureIsMipMapped, mipmapStatus,
-            GrInternalSurfaceFlags::kReadOnly, SkBackingFit::kExact, SkBudgeted::kNo,
-            GrProtected::kNo, GrSurfaceProxy::UseAllocator::kYes);
+            backendFormat,
+            fBackendTexture.dimensions(),
+            textureIsMipMapped,
+            mipmapStatus,
+            GrInternalSurfaceFlags::kReadOnly,
+            SkBackingFit::kExact,
+            skgpu::Budgeted::kNo,
+            GrProtected::kNo,
+            GrSurfaceProxy::UseAllocator::kYes,
+            "BackendTextureImageGenerator");
     if (!proxy) {
         return {};
     }
 
-    if (texGenPolicy == GrImageTexGenPolicy::kDraw && origin.isZero() &&
-        info.dimensions() == fBackendTexture.dimensions() &&
-        (mipmapped == GrMipmapped::kNo || proxy->mipmapped() == GrMipmapped::kYes)) {
-        // If the caller wants the entire texture and we have the correct mip support, we're done
+    if (texGenPolicy == GrImageTexGenPolicy::kDraw &&
+        (mipmapped == skgpu::Mipmapped::kNo || proxy->mipmapped() == skgpu::Mipmapped::kYes)) {
+        // If we have the correct mip support, we're done
         return GrSurfaceProxyView(std::move(proxy), fSurfaceOrigin, readSwizzle);
     } else {
-        SkIRect subset = SkIRect::MakeXYWH(origin.fX, origin.fY, info.width(), info.height());
-
-        SkBudgeted budgeted = texGenPolicy == GrImageTexGenPolicy::kNew_Uncached_Unbudgeted
-                                      ? SkBudgeted::kNo
-                                      : SkBudgeted::kYes;
+        skgpu::Budgeted budgeted = texGenPolicy == GrImageTexGenPolicy::kNew_Uncached_Unbudgeted
+                                           ? skgpu::Budgeted::kNo
+                                           : skgpu::Budgeted::kYes;
 
         auto copy = GrSurfaceProxy::Copy(dContext,
                                          std::move(proxy),
                                          fSurfaceOrigin,
                                          mipmapped,
-                                         subset,
+                                         SkIRect::MakeWH(info.width(), info.height()),
                                          SkBackingFit::kExact,
-                                         budgeted);
+                                         budgeted,
+                                         /*label=*/"BackendTextureImageGenerator_GenerateTexture");
         return {std::move(copy), fSurfaceOrigin, readSwizzle};
     }
 }

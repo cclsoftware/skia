@@ -7,17 +7,30 @@
 
 #include "src/core/SkResourceCache.h"
 
+#include "include/core/SkGraphics.h"
+#include "include/core/SkString.h"
 #include "include/core/SkTraceMemoryDump.h"
-#include "include/private/SkMutex.h"
-#include "include/private/SkTo.h"
-#include "src/core/SkDiscardableMemory.h"
+#include "include/core/SkTypes.h"
+#include "include/private/base/SkAlign.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/base/SkMalloc.h"
+#include "include/private/base/SkMath.h"
+#include "include/private/base/SkMutex.h"
+#include "include/private/base/SkTArray.h"
+#include "include/private/base/SkTo.h"
+#include "src/core/SkCachedData.h"
+#include "src/core/SkChecksum.h"
 #include "src/core/SkImageFilter_Base.h"
 #include "src/core/SkMessageBus.h"
-#include "src/core/SkMipmap.h"
-#include "src/core/SkOpts.h"
+#include "src/core/SkTHash.h"
 
-#include <stddef.h>
-#include <stdlib.h>
+#if defined(SK_USE_DISCARDABLE_SCALEDIMAGECACHE)
+#include "include/private/chromium/SkDiscardableMemory.h"
+#endif
+
+#include <algorithm>
+
+using namespace skia_private;
 
 DECLARE_SKMESSAGEBUS_MESSAGE(SkResourceCache::PurgeSharedIDMessage, uint32_t, true)
 
@@ -57,11 +70,9 @@ void SkResourceCache::Key::init(void* nameSpace, uint64_t sharedID, size_t dataS
     fSharedID_hi = (uint32_t)(sharedID >> 32);
     fNamespace = nameSpace;
     // skip unhashed fields when computing the hash
-    fHash = SkOpts::hash(this->as32() + kUnhashedLocal32s,
-                         (fCount32 - kUnhashedLocal32s) << 2);
+    fHash = SkChecksum::Hash32(this->as32() + kUnhashedLocal32s,
+                               (fCount32 - kUnhashedLocal32s) << 2);
 }
-
-#include "include/private/SkTHash.h"
 
 namespace {
     struct HashTraits {
@@ -73,7 +84,7 @@ namespace {
 }  // namespace
 
 class SkResourceCache::Hash :
-    public SkTHashTable<SkResourceCache::Rec*, SkResourceCache::Key, HashTraits> {};
+    public THashTable<SkResourceCache::Rec*, SkResourceCache::Key, HashTraits> {};
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -443,16 +454,15 @@ size_t SkResourceCache::getEffectiveSingleAllocationByteLimit() const {
 }
 
 void SkResourceCache::checkMessages() {
-    SkTArray<PurgeSharedIDMessage> msgs;
+    TArray<PurgeSharedIDMessage> msgs;
     fPurgeSharedIDInbox.poll(&msgs);
-    for (int i = 0; i < msgs.count(); ++i) {
+    for (int i = 0; i < msgs.size(); ++i) {
         this->purgeSharedID(msgs[i].fSharedID);
     }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
-static SkResourceCache* gResourceCache = nullptr;
 static SkMutex& resource_cache_mutex() {
     static SkMutex& mutex = *(new SkMutex);
     return mutex;
@@ -462,8 +472,9 @@ static SkMutex& resource_cache_mutex() {
 static SkResourceCache* get_cache() {
     // resource_cache_mutex() is always held when this is called, so we don't need to be fancy in here.
     resource_cache_mutex().assertHeld();
+    static SkResourceCache* gResourceCache = nullptr;
     if (nullptr == gResourceCache) {
-#ifdef SK_USE_DISCARDABLE_SCALEDIMAGECACHE
+#if defined(SK_USE_DISCARDABLE_SCALEDIMAGECACHE)
         gResourceCache = new SkResourceCache(SkDiscardableMemory::Create);
 #else
         gResourceCache = new SkResourceCache(SK_DEFAULT_IMAGE_CACHE_LIMIT);
@@ -549,9 +560,6 @@ void SkResourceCache::PostPurgeSharedID(uint64_t sharedID) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-
-#include "include/core/SkGraphics.h"
-#include "include/core/SkImageFilter.h"
 
 size_t SkGraphics::GetResourceCacheTotalBytesUsed() {
     return SkResourceCache::GetTotalBytesUsed();

@@ -5,27 +5,35 @@
  * found in the LICENSE file.
  */
 
-#include "include/gpu/GrRecordingContext.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
 
-#include "include/gpu/GrContextThreadSafeProxy.h"
-#include "src/core/SkArenaAlloc.h"
+#include "include/core/SkString.h"
+#include "include/core/SkTypes.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrContextOptions.h"
+#include "include/gpu/ganesh/GrContextThreadSafeProxy.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/base/SkMacros.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/base/SkArenaAlloc.h"
 #include "src/gpu/ganesh/GrAuditTrail.h"
 #include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrContextThreadSafeProxyPriv.h"
 #include "src/gpu/ganesh/GrDrawingManager.h"
-#include "src/gpu/ganesh/GrMemoryPool.h"
 #include "src/gpu/ganesh/GrProgramDesc.h"
 #include "src/gpu/ganesh/GrProxyProvider.h"
-#include "src/gpu/ganesh/GrRecordingContextPriv.h"
-#include "src/gpu/ganesh/SkGr.h"
-#include "src/gpu/ganesh/SurfaceContext.h"
-#include "src/gpu/ganesh/effects/GrSkSLFP.h"
-#include "src/gpu/ganesh/text/GrTextBlob.h"
-#include "src/gpu/ganesh/text/GrTextBlobRedrawCoordinator.h"
-
-#if SK_GPU_V1
+#include "src/gpu/ganesh/PathRendererChain.h"
 #include "src/gpu/ganesh/ops/AtlasTextOp.h"
-#endif
+#include "src/text/gpu/SubRunAllocator.h"
+#include "src/text/gpu/TextBlobRedrawCoordinator.h"
+
+#include <utility>
+
+using namespace skia_private;
+
+using TextBlobRedrawCoordinator = sktext::gpu::TextBlobRedrawCoordinator;
 
 GrRecordingContext::ProgramData::ProgramData(std::unique_ptr<const GrProgramDesc> desc,
                                              const GrProgramInfo* info)
@@ -41,34 +49,30 @@ GrRecordingContext::ProgramData::ProgramData(ProgramData&& other)
 GrRecordingContext::ProgramData::~ProgramData() = default;
 
 GrRecordingContext::GrRecordingContext(sk_sp<GrContextThreadSafeProxy> proxy, bool ddlRecording)
-        : INHERITED(std::move(proxy))
+        : GrImageContext(std::move(proxy))
         , fAuditTrail(new GrAuditTrail())
         , fArenas(ddlRecording) {
     fProxyProvider = std::make_unique<GrProxyProvider>(this);
 }
 
 GrRecordingContext::~GrRecordingContext() {
-#if SK_GPU_V1
-    skgpu::v1::AtlasTextOp::ClearCache();
-#endif
+    skgpu::ganesh::AtlasTextOp::ClearCache();
 }
 
 bool GrRecordingContext::init() {
-    if (!INHERITED::init()) {
+    if (!GrImageContext::init()) {
         return false;
     }
 
-#if SK_GPU_V1
-    skgpu::v1::PathRendererChain::Options prcOptions;
+    skgpu::ganesh::PathRendererChain::Options prcOptions;
     prcOptions.fAllowPathMaskCaching = this->options().fAllowPathMaskCaching;
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
     prcOptions.fGpuPathRenderers = this->options().fGpuPathRenderers;
 #endif
     // FIXME: Once this is removed from Chrome and Android, rename to fEnable"".
     if (this->options().fDisableDistanceFieldPaths) {
         prcOptions.fGpuPathRenderers &= ~GpuPathRenderers::kSmall;
     }
-#endif
 
     bool reduceOpsTaskSplitting = true;
     if (this->caps()->avoidReorderingRenderTasks()) {
@@ -79,15 +83,13 @@ bool GrRecordingContext::init() {
         reduceOpsTaskSplitting = false;
     }
     fDrawingManager.reset(new GrDrawingManager(this,
-#if SK_GPU_V1
                                                prcOptions,
-#endif
                                                reduceOpsTaskSplitting));
     return true;
 }
 
 void GrRecordingContext::abandonContext() {
-    INHERITED::abandonContext();
+    GrImageContext::abandonContext();
 
     this->destroyDrawingManager();
 }
@@ -101,7 +103,7 @@ void GrRecordingContext::destroyDrawingManager() {
 }
 
 GrRecordingContext::Arenas::Arenas(SkArenaAlloc* recordTimeAllocator,
-                                   GrSubRunAllocator* subRunAllocator)
+                                   sktext::gpu::SubRunAllocator* subRunAllocator)
         : fRecordTimeAllocator(recordTimeAllocator)
         , fRecordTimeSubRunAllocator(subRunAllocator) {
     // OwnedArenas should instantiate these before passing the bare pointer off to this struct.
@@ -127,7 +129,7 @@ GrRecordingContext::Arenas GrRecordingContext::OwnedArenas::get() {
     }
 
     if (!fRecordTimeSubRunAllocator) {
-        fRecordTimeSubRunAllocator = std::make_unique<GrSubRunAllocator>();
+        fRecordTimeSubRunAllocator = std::make_unique<sktext::gpu::SubRunAllocator>();
     }
 
     return {fRecordTimeAllocator.get(), fRecordTimeSubRunAllocator.get()};
@@ -137,11 +139,11 @@ GrRecordingContext::OwnedArenas&& GrRecordingContext::detachArenas() {
     return std::move(fArenas);
 }
 
-GrTextBlobRedrawCoordinator* GrRecordingContext::getTextBlobRedrawCoordinator() {
+TextBlobRedrawCoordinator* GrRecordingContext::getTextBlobRedrawCoordinator() {
     return fThreadSafeProxy->priv().getTextBlobRedrawCoordinator();
 }
 
-const GrTextBlobRedrawCoordinator* GrRecordingContext::getTextBlobRedrawCoordinator() const {
+const TextBlobRedrawCoordinator* GrRecordingContext::getTextBlobRedrawCoordinator() const {
     return fThreadSafeProxy->priv().getTextBlobRedrawCoordinator();
 }
 
@@ -159,6 +161,10 @@ void GrRecordingContext::addOnFlushCallbackObject(GrOnFlushCallbackObject* onFlu
 
 ////////////////////////////////////////////////////////////////////////////////
 
+sk_sp<const SkCapabilities> GrRecordingContext::skCapabilities() const {
+    return this->refCaps();
+}
+
 int GrRecordingContext::maxTextureSize() const { return this->caps()->maxTextureSize(); }
 
 int GrRecordingContext::maxRenderTargetSize() const { return this->caps()->maxRenderTargetSize(); }
@@ -168,6 +174,10 @@ bool GrRecordingContext::colorTypeSupportedAsImage(SkColorType colorType) const 
             this->caps()->getDefaultBackendFormat(SkColorTypeToGrColorType(colorType),
                                                   GrRenderable::kNo);
     return format.isValid();
+}
+
+bool GrRecordingContext::supportsProtectedContent() const {
+    return this->caps()->supportsProtectedContent();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -189,7 +199,7 @@ void GrRecordingContext::dumpJSON(SkJSONWriter* writer) const {
 void GrRecordingContext::dumpJSON(SkJSONWriter*) const { }
 #endif
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
 
 #if GR_GPU_STATS
 
@@ -198,8 +208,8 @@ void GrRecordingContext::Stats::dump(SkString* out) const {
     out->appendf("Num Path Mask Cache Hits: %d\n", fNumPathMaskCacheHits);
 }
 
-void GrRecordingContext::Stats::dumpKeyValuePairs(SkTArray<SkString>* keys,
-                                                  SkTArray<double>* values) const {
+void GrRecordingContext::Stats::dumpKeyValuePairs(TArray<SkString>* keys,
+                                                  TArray<double>* values) const {
     keys->push_back(SkString("path_masks_generated"));
     values->push_back(fNumPathMasksGenerated);
 
@@ -207,8 +217,8 @@ void GrRecordingContext::Stats::dumpKeyValuePairs(SkTArray<SkString>* keys,
     values->push_back(fNumPathMaskCacheHits);
 }
 
-void GrRecordingContext::DMSAAStats::dumpKeyValuePairs(SkTArray<SkString>* keys,
-                                                       SkTArray<double>* values) const {
+void GrRecordingContext::DMSAAStats::dumpKeyValuePairs(TArray<SkString>* keys,
+                                                       TArray<double>* values) const {
     keys->push_back(SkString("dmsaa_render_passes"));
     values->push_back(fNumRenderPasses);
 
@@ -241,4 +251,4 @@ void GrRecordingContext::DMSAAStats::merge(const DMSAAStats& stats) {
 }
 
 #endif // GR_GPU_STATS
-#endif // GR_TEST_UTILS
+#endif // defined(GPU_TEST_UTILS)

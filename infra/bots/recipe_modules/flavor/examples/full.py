@@ -54,8 +54,6 @@ def RunSteps(api):
 
     if 'Lottie' in builder:
       api.flavor.install(lotties=True)
-    elif 'Mskp' in builder:
-      api.flavor.install(mskps=True)
     elif all(v in builder for v in ['Perf', 'Android', 'CPU']):
       api.flavor.install(skps=True, images=True, svgs=True,
                          resources=True, texttraces=True)
@@ -81,11 +79,11 @@ def RunSteps(api):
 
 TEST_BUILDERS = [
   'Perf-Android-Clang-AndroidOne-GPU-Mali400MP2-arm-Release-All-Android_SkottieTracing',
-  'Perf-Android-Clang-GalaxyS7_G930FD-GPU-MaliT880-arm64-Debug-All-Android',
-  'Perf-Android-Clang-NVIDIA_Shield-CPU-TegraX1-arm64-Release-All-Android',
-  'Perf-Android-Clang-Nexus5x-GPU-Adreno418-arm64-Debug-All-Android',
-  'Perf-Android-Clang-Pixel2XL-GPU-Adreno540-arm64-Release-All-Android_Skpbench_Mskp',
   'Perf-Android-Clang-GalaxyS20-GPU-MaliG77-arm64-Release-All-Android_Vulkan',
+  'Perf-Android-Clang-GalaxyS7_G930FD-GPU-MaliT880-arm64-Debug-All-Android',
+  'Perf-Android-Clang-MokeyGo32-CPU-Cortex-arm-Release-All-Android',
+  'Perf-Android-Clang-MotoG73-GPU-BXM_8_256-arm64-Release-All-Android',
+  'Perf-Android-Clang-Nexus5x-GPU-Adreno418-arm64-Debug-All-Android',
   'Perf-Android-Clang-Pixel6-GPU-Adreno620-arm64-Release-All-Android',
   'Perf-ChromeOS-Clang-SamsungChromebookPlus-GPU-MaliT860-arm-Release-All',
   'Perf-Debian10-Clang-GCE-CPU-AVX2-x86_64-Debug-All-MSAN',
@@ -97,8 +95,6 @@ TEST_BUILDERS = [
   'Test-Android-Clang-Nexus5x-GPU-Adreno418-arm64-Release-All-Android_ASAN',
   'Test-Android-Clang-Pixel3a-GPU-Adreno615-arm64-Debug-All-Android_Vulkan',
   'Test-ChromeOS-Clang-SamsungChromebookPlus-GPU-MaliT860-arm-Release-All',
-  'Test-Debian10-GCC-GCE-CPU-AVX2-x86-Debug-All-Docker',
-  'Test-Debian10-GCC-GCE-CPU-AVX2-x86_64-Debug-All-Docker',
   'Test-Debian10-Clang-GCE-CPU-AVX2-x86_64-Debug-All-Coverage',
   'Test-Debian10-Clang-GCE-CPU-AVX2-x86_64-Release-All-Lottie',
   'Test-Debian10-Clang-GCE-CPU-AVX2-x86_64-Release-All-TSAN',
@@ -108,6 +104,8 @@ TEST_BUILDERS = [
   ('Test-Ubuntu18-Clang-Golo-GPU-QuadroP400-x86_64-Release-All'
    '-Valgrind_AbandonGpuContext_SK_CPU_LIMIT_SSE41'),
   'Test-Debian10-Clang-NUC7i5BNK-GPU-IntelIris640-x86_64-Debug-All-ASAN_Vulkan',
+  'Test-Debian11-Clang-NUC11TZi5-GPU-IntelIrisXe-x86_64-Debug-All',
+  'Test-Win10-Clang-NUC5i7RYH-CPU-AVX2-x86_64-Debug-All-NativeFonts_DWriteCore',
 ]
 
 # Default properties used for TEST_BUILDERS.

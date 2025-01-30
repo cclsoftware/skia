@@ -10,7 +10,7 @@
 
 #include "src/gpu/ganesh/GrAttachment.h"
 
-#include "include/gpu/d3d/GrD3DTypes.h"
+#include "include/gpu/ganesh/d3d/GrD3DTypes.h"
 #include "src/gpu/ganesh/d3d/GrD3DDescriptorHeap.h"
 #include "src/gpu/ganesh/d3d/GrD3DTextureResource.h"
 
@@ -45,6 +45,8 @@ private:
                     std::string_view label);
 
     GrD3DGpu* getD3DGpu() const;
+
+    void onSetLabel() override;
 
     GrD3DDescriptorHeap::CPUHandle fView;
     DXGI_FORMAT fFormat;

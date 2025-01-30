@@ -8,15 +8,34 @@
 #ifndef StrokeTessellateOp_DEFINED
 #define StrokeTessellateOp_DEFINED
 
+#include "include/core/SkMatrix.h"
 #include "include/core/SkStrokeRec.h"
+#include "include/private/SkColorData.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkMacros.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/ganesh/GrCaps.h"
+#include "src/gpu/ganesh/GrProcessorSet.h"
 #include "src/gpu/ganesh/ops/GrDrawOp.h"
-#include "src/gpu/ganesh/ops/StrokeTessellator.h"
-#include "src/gpu/ganesh/tessellate/shaders/GrTessellationShader.h"
+#include "src/gpu/ganesh/ops/GrOp.h"
+#include "src/gpu/ganesh/tessellate/GrTessellationShader.h"
+#include "src/gpu/ganesh/tessellate/StrokeTessellator.h"
+#include "src/gpu/tessellate/Tessellation.h"
 
+class GrAppliedClip;
+class GrDstProxyView;
+class GrOpFlushState;
+class GrPaint;
+class GrProgramInfo;
 class GrRecordingContext;
 class GrStrokeTessellationShader;
+class GrSurfaceProxyView;
+class SkArenaAlloc;
+class SkPath;
+enum class GrXferBarrierFlags;
+struct SkRect;
 
-namespace skgpu::v1 {
+namespace skgpu::ganesh {
 
 // Renders strokes by linearizing them into sorted "parametric" and "radial" edges. See
 // GrStrokeTessellationShader.
@@ -25,7 +44,9 @@ public:
     StrokeTessellateOp(GrAAType, const SkMatrix&, const SkPath&, const SkStrokeRec&, GrPaint&&);
 
 private:
+    using PatchAttribs = StrokeTessellator::PatchAttribs;
     using PathStrokeList = StrokeTessellator::PathStrokeList;
+
     DEFINE_OP_CLASS_ID
 
     SkStrokeRec& headStroke() { return fPathStrokeList.fStroke; }
@@ -79,6 +100,6 @@ private:
     const GrProgramInfo* fFillProgram = nullptr;
 };
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh
 
 #endif // StrokeTessellateOp_DEFINED

@@ -4,19 +4,26 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/ops/DashLinePathRenderer.h"
 
+#include "include/core/SkPoint.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
 #include "src/gpu/ganesh/GrAuditTrail.h"
-#include "src/gpu/ganesh/GrGpu.h"
+#include "src/gpu/ganesh/GrRecordingContextPriv.h"
+#include "src/gpu/ganesh/GrStyle.h"
+#include "src/gpu/ganesh/SurfaceDrawContext.h"
 #include "src/gpu/ganesh/geometry/GrStyledShape.h"
 #include "src/gpu/ganesh/ops/DashOp.h"
-#include "src/gpu/ganesh/ops/GrMeshDrawOp.h"
-#include "src/gpu/ganesh/v1/SurfaceDrawContext_v1.h"
+#include "src/gpu/ganesh/ops/GrOp.h"
 
-namespace skgpu::v1 {
+#include <utility>
 
-PathRenderer::CanDrawPath DashLinePathRenderer::onCanDrawPath(const CanDrawPathArgs& args) const {
+namespace skgpu::ganesh {
+
+skgpu::ganesh::PathRenderer::CanDrawPath DashLinePathRenderer::onCanDrawPath(
+        const CanDrawPathArgs& args) const {
     SkPoint pts[2];
     bool inverted;
     if (args.fShape->style().isDashed() && args.fShape->asLine(pts, &inverted)) {
@@ -59,4 +66,4 @@ bool DashLinePathRenderer::onDrawPath(const DrawPathArgs& args) {
     return true;
 }
 
-} // namespace skgpu::v1
+} // namespace skgpu::ganesh

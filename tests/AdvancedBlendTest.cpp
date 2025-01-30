@@ -6,7 +6,7 @@
  */
 
 #include "include/core/SkBlendMode.h"
-#include "include/gpu/GrDirectContext.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
 #include "include/private/SkColorData.h"
 #include "include/private/gpu/ganesh/GrTypesPriv.h"
 #include "src/gpu/Blend.h"
@@ -18,12 +18,17 @@
 #include "src/gpu/ganesh/GrUserStencilSettings.h"
 #include "src/gpu/ganesh/GrXferProcessor.h"
 #include "src/gpu/ganesh/effects/GrCustomXfermode.h"
+#include "tests/CtsEnforcement.h"
 #include "tests/Test.h"
-#include "tools/gpu/GrContextFactory.h"
 
 #include <utility>
 
-DEF_GPUTEST_FOR_RENDERING_CONTEXTS(AdvancedBlendTest, reporter, ctxInfo) {
+struct GrContextOptions;
+
+DEF_GANESH_TEST_FOR_RENDERING_CONTEXTS(AdvancedBlendTest,
+                                       reporter,
+                                       ctxInfo,
+                                       CtsEnforcement::kApiLevel_T) {
     static constexpr auto opaque = GrProcessorAnalysisColor::Opaque::kYes;
     static constexpr auto coverage = GrProcessorAnalysisCoverage::kSingleChannel;
     const GrCaps& caps = *ctxInfo.directContext()->priv().caps();

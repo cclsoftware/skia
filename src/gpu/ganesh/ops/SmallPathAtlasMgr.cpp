@@ -7,8 +7,18 @@
 
 #include "src/gpu/ganesh/ops/SmallPathAtlasMgr.h"
 
-#include "src/gpu/ganesh/geometry/GrStyledShape.h"
+#include "include/core/SkSize.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/private/base/SkTo.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/ops/SmallPathShapeData.h"
+
+#include <cstddef>
+
+#if !defined(SK_ENABLE_OPTIMIZE_SIZE)
 
 using MaskFormat = skgpu::MaskFormat;
 
@@ -17,7 +27,7 @@ static int g_NumCachedShapes = 0;
 static int g_NumFreedShapes = 0;
 #endif
 
-namespace skgpu::v1 {
+namespace skgpu::ganesh {
 
 SmallPathAtlasMgr::SmallPathAtlasMgr() {}
 
@@ -64,7 +74,9 @@ bool SmallPathAtlasMgr::initAtlas(GrProxyProvider* proxyProvider, const GrCaps* 
                                  GrColorTypeBytesPerPixel(atlasColorType),
                                  size.width(), size.height(),
                                  kPlotWidth, kPlotHeight, this,
-                                 GrDrawOpAtlas::AllowMultitexturing::kYes, this);
+                                 GrDrawOpAtlas::AllowMultitexturing::kYes,
+                                 this,
+                                 /*label=*/"SmallPathAtlas");
 
     return SkToBool(fAtlas);
 }
@@ -116,7 +128,7 @@ GrDrawOpAtlas::ErrorCode SmallPathAtlasMgr::addToAtlas(GrResourceProvider* resou
 }
 
 void SmallPathAtlasMgr::setUseToken(SmallPathShapeData* shapeData,
-                                    GrDeferredUploadToken token) {
+                                    skgpu::AtlasToken token) {
     fAtlas->setLastUseToken(shapeData->fAtlasLocator, token);
 }
 
@@ -139,4 +151,6 @@ void SmallPathAtlasMgr::evict(skgpu::PlotLocator plotLocator) {
     }
 }
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh
+
+#endif // SK_ENABLE_OPTIMIZE_SIZE

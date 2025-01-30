@@ -8,18 +8,18 @@
 #include "src/gpu/ganesh/GrColorSpaceXform.h"
 
 #include "include/core/SkString.h"
-#include "include/third_party/skcms/skcms.h"
-#include "src/core/SkColorSpacePriv.h"
+#include "modules/skcms/skcms.h"
 #include "src/gpu/KeyBuilder.h"
 #include "src/gpu/ganesh/GrColorInfo.h"
-#include "src/gpu/ganesh/GrProcessor.h"
 #include "src/gpu/ganesh/glsl/GrGLSLColorSpaceXformHelper.h"
 #include "src/gpu/ganesh/glsl/GrGLSLFragmentShaderBuilder.h"
-#include <string.h>
+
+#include <cstring>
 #include <utility>
 
 class GrGLSLProgramDataManager;
 class GrGLSLUniformHandler;
+enum SkAlphaType : int;
 struct GrShaderCaps;
 
 sk_sp<GrColorSpaceXform> GrColorSpaceXform::Make(SkColorSpace* src, SkAlphaType srcAT,
@@ -43,10 +43,10 @@ uint32_t GrColorSpaceXform::XformKey(const GrColorSpaceXform* xform) {
     const SkColorSpaceXformSteps& steps(xform->fSteps);
     uint32_t key = steps.flags.mask();
     if (steps.flags.linearize) {
-        key |= classify_transfer_fn(steps.srcTF)    << 8;
+        key |= skcms_TransferFunction_getType(&steps.srcTF)    << 8;
     }
     if (steps.flags.encode) {
-        key |= classify_transfer_fn(steps.dstTFInv) << 16;
+        key |= skcms_TransferFunction_getType(&steps.dstTFInv) << 16;
     }
     return key;
 }

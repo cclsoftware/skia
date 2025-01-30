@@ -4,14 +4,17 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
+#include "src/gpu/ganesh/GrGpuResource.h"
 
 #include "include/core/SkTraceMemoryDump.h"
-#include "include/gpu/GrDirectContext.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/private/base/SkDebug.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
 #include "src/gpu/ganesh/GrGpu.h"
-#include "src/gpu/ganesh/GrGpuResource.h"
 #include "src/gpu/ganesh/GrGpuResourcePriv.h"
 #include "src/gpu/ganesh/GrResourceCache.h"
+
 #include <atomic>
 
 static inline GrResourceCache* get_resource_cache(GrGpu* gpu) {
@@ -26,10 +29,10 @@ GrGpuResource::GrGpuResource(GrGpu* gpu, std::string_view label)
     SkDEBUGCODE(fCacheArrayIndex = -1);
 }
 
-void GrGpuResource::registerWithCache(SkBudgeted budgeted) {
+void GrGpuResource::registerWithCache(skgpu::Budgeted budgeted) {
     SkASSERT(fBudgetedType == GrBudgetedType::kUnbudgetedUncacheable);
-    fBudgetedType = budgeted == SkBudgeted::kYes ? GrBudgetedType::kBudgeted
-                                                 : GrBudgetedType::kUnbudgetedUncacheable;
+    fBudgetedType = budgeted == skgpu::Budgeted::kYes ? GrBudgetedType::kBudgeted
+                                                      : GrBudgetedType::kUnbudgetedUncacheable;
     this->computeScratchKey(&fScratchKey);
     get_resource_cache(fGpu)->resourceAccess().insertResource(this);
 }
@@ -86,6 +89,7 @@ void GrGpuResource::dumpMemoryStatisticsPriv(SkTraceMemoryDump* traceMemoryDump,
 
     traceMemoryDump->dumpNumericValue(resourceName.c_str(), "size", "bytes", size);
     traceMemoryDump->dumpStringValue(resourceName.c_str(), "type", type);
+    traceMemoryDump->dumpStringValue(resourceName.c_str(), "label", this->getLabel().c_str());
     traceMemoryDump->dumpStringValue(resourceName.c_str(), "category", tag);
     if (this->isPurgeable()) {
         traceMemoryDump->dumpNumericValue(resourceName.c_str(), "purgeable_size", "bytes", size);

@@ -8,21 +8,22 @@
 #ifndef FillRectOp_DEFINED
 #define FillRectOp_DEFINED
 
-#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/ganesh/ops/GrOp.h"
 #include "src/gpu/ganesh/ops/GrSimpleMeshDrawOpHelper.h"
 
-struct DrawQuad;
+#include <cstdint>
+
 class GrClip;
-class GrDrawOp;
 class GrPaint;
-class GrQuad;
-struct GrQuadSetEntry;
 class GrRecordingContext;
-struct GrUserStencilSettings;
 class SkMatrix;
+enum class GrAAType : unsigned int;
+struct DrawQuad;
+struct GrQuadSetEntry;
+struct GrUserStencilSettings;
 struct SkRect;
 
-namespace skgpu::v1 {
+namespace skgpu::ganesh {
 
 class SurfaceDrawContext;
 
@@ -64,7 +65,7 @@ public:
                                int quadCount,
                                const GrUserStencilSettings* = nullptr);
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
     static uint32_t ClassID();
 #endif
 
@@ -81,6 +82,6 @@ private:
                               int* numConsumed);
 };
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh
 
 #endif // FillRectOp_DEFINED

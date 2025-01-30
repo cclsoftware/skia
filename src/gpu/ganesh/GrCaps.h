@@ -8,42 +8,64 @@
 #ifndef GrCaps_DEFINED
 #define GrCaps_DEFINED
 
-#include "include/core/SkImageInfo.h"
+#include "include/core/SkCapabilities.h"
 #include "include/core/SkRefCnt.h"
-#include "include/core/SkString.h"
-#include "include/gpu/GrDriverBugWorkarounds.h"
+#include "include/core/SkTypes.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/ganesh/GrDriverBugWorkarounds.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/private/base/SkMacros.h"
+#include "include/private/base/SkTo.h"
 #include "include/private/gpu/ganesh/GrTypesPriv.h"
-#include "src/core/SkCompressedDataUtils.h"
 #include "src/gpu/Blend.h"
 #include "src/gpu/Swizzle.h"
 #include "src/gpu/ganesh/GrSamplerState.h"
 #include "src/gpu/ganesh/GrShaderCaps.h"
 #include "src/gpu/ganesh/GrSurfaceProxy.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <vector>
+
 class GrBackendFormat;
 class GrBackendRenderTarget;
-class GrBackendTexture;
-struct GrContextOptions;
 class GrProgramDesc;
 class GrProgramInfo;
+class GrRenderTarget;
 class GrRenderTargetProxy;
 class GrSurface;
 class SkJSONWriter;
+enum class SkTextureCompressionType;
+struct GrContextOptions;
+struct SkIRect;
+struct SkISize;
 
 namespace skgpu {
-class KeyBuilder;
+    class KeyBuilder;
+}
+namespace GrTest {
+    struct TestFormatColorTypeCombination;
 }
 
 /**
  * Represents the capabilities of a GrContext.
  */
-class GrCaps : public SkRefCnt {
+class GrCaps : public SkCapabilities {
 public:
     GrCaps(const GrContextOptions&);
 
     void dumpJSON(SkJSONWriter*) const;
 
     const GrShaderCaps* shaderCaps() const { return fShaderCaps.get(); }
+
+#if defined(GPU_TEST_UTILS)
+    std::string_view deviceName() const { return fDeviceName; }
+#endif
 
     bool npotTextureTileSupport() const { return fNPOTTextureTileSupport; }
     /** To avoid as-yet-unnecessary complexity we don't allow any partial support of MIP Maps (e.g.
@@ -119,11 +141,6 @@ public:
 
     bool avoidWritePixelsFastPath() const { return fAvoidWritePixelsFastPath; }
 
-    // http://skbug.com/9739
-    bool requiresManualFBBarrierAfterTessellatedStencilDraw() const {
-        return fRequiresManualFBBarrierAfterTessellatedStencilDraw;
-    }
-
     // glDrawElementsIndirect fails GrMeshTest on every Win10 Intel bot.
     bool nativeDrawIndexedIndirectIsBroken() const { return fNativeDrawIndexedIndirectIsBroken; }
 
@@ -170,8 +187,8 @@ public:
         return fMustSyncGpuDuringAbandon;
     }
 
-    // Shortcut for shaderCaps()->reducedShaderMode().
-    bool reducedShaderMode() const { return this->shaderCaps()->reducedShaderMode(); }
+    // Shortcut for shaderCaps()->fReducedShaderMode.
+    bool reducedShaderMode() const { return this->shaderCaps()->fReducedShaderMode; }
 
     /**
      * Indicates whether GPU->CPU memory mapping for GPU resources such as vertex buffers and
@@ -219,13 +236,21 @@ public:
         return this->maxWindowRectangles() > 0 && this->onIsWindowRectanglesSupportedForRT(rt);
     }
 
-    // TODO: Should never be called, will be deleted shortly skbug.com/13263.
-    int minPathVerbsForHwTessellation() const { return 0; }
-    int minStrokeVerbsForHwTessellation() const { return 0; }
-
     uint32_t maxPushConstantsSize() const { return fMaxPushConstantsSize; }
 
-    size_t transferBufferAlignment() const { return fTransferBufferAlignment; }
+    // Alignment requirement for row bytes in buffer<->texture transfers.
+    size_t transferBufferRowBytesAlignment() const { return fTransferBufferRowBytesAlignment; }
+
+    // Alignment requirement for offsets and size in buffer->buffer transfers.
+    size_t transferFromBufferToBufferAlignment() const {
+        return fTransferFromBufferToBufferAlignment;
+    }
+
+    // Alignment requirement for offset and size passed to in GrGpuBuffer::updateData when the
+    // preserve param is true.
+    size_t bufferUpdateDataPreserveAlignment() const {
+        return fBufferUpdateDataPreserveAlignment;
+    }
 
     virtual bool isFormatSRGB(const GrBackendFormat&) const = 0;
 
@@ -342,12 +367,13 @@ public:
 
     bool transferFromSurfaceToBufferSupport() const { return fTransferFromSurfaceToBufferSupport; }
     bool transferFromBufferToTextureSupport() const { return fTransferFromBufferToTextureSupport; }
+    bool transferFromBufferToBufferSupport()  const { return fTransferFromBufferToBufferSupport;  }
 
     bool suppressPrints() const { return fSuppressPrints; }
 
     size_t bufferMapThreshold() const {
         SkASSERT(fBufferMapThreshold >= 0);
-        return fBufferMapThreshold;
+        return static_cast<size_t>(fBufferMapThreshold);
     }
 
     /** True in environments that will issue errors if memory uploaded to buffers
@@ -360,6 +386,11 @@ public:
      */
     bool shouldInitializeTextures() const { return fShouldInitializeTextures; }
 
+    /**
+     * When a new GrGpuBuffer is created is it known to contain all zero bytes?
+     */
+    bool buffersAreInitiallyZero() const { return fBuffersAreInitiallyZero; }
+
     /** Returns true if the given backend supports importing AHardwareBuffers via the
      * GrAHardwarebufferImageGenerator. This will only ever be supported on Android devices with API
      * level >= 26.
@@ -368,22 +399,28 @@ public:
 
     bool wireframeMode() const { return fWireframeMode; }
 
-    /** Supports using GrFence. */
-    bool fenceSyncSupport() const { return fFenceSyncSupport; }
-
-    /** Supports using GrSemaphore. */
+    /** Supports using GrSemaphores. */
     bool semaphoreSupport() const { return fSemaphoreSupport; }
+
+    /** Supports using GrBackendSemaphore as "signal" semaphores or for waiting. See also
+     *  GrFlushInfo and GrDirectContext. */
+    bool backendSemaphoreSupport() const { return fBackendSemaphoreSupport; }
+
+    /** Supports async callback for finishedProcs */
+    bool finishedProcAsyncCallbackSupport() const { return fFinishedProcAsyncCallbackSupport; }
 
     bool crossContextTextureSupport() const { return fCrossContextTextureSupport; }
     /**
      * Returns whether or not we will be able to do a copy given the passed in params
      */
-    bool canCopySurface(const GrSurfaceProxy* dst, const GrSurfaceProxy* src,
-                        const SkIRect& srcRect, const SkIPoint& dstPoint) const;
+    bool canCopySurface(const GrSurfaceProxy* dst, const SkIRect& dstRect,
+                        const GrSurfaceProxy* src, const SkIRect& srcRect) const;
 
     bool dynamicStateArrayGeometryProcessorTextureSupport() const {
         return fDynamicStateArrayGeometryProcessorTextureSupport;
     }
+
+    bool supportsProtectedContent() const { return fSupportsProtectedContent; }
 
     // Not all backends support clearing with a scissor test (e.g. Metal), this will always
     // return true if performColorClearsAsDraws() returns true.
@@ -427,15 +464,19 @@ public:
         return {};
     }
 
-    bool validateSurfaceParams(const SkISize&, const GrBackendFormat&, GrRenderable renderable,
-                               int renderTargetSampleCnt, GrMipmapped, GrTextureType) const;
+    bool validateSurfaceParams(const SkISize&,
+                               const GrBackendFormat&,
+                               GrRenderable renderable,
+                               int renderTargetSampleCnt,
+                               skgpu::Mipmapped,
+                               GrTextureType) const;
 
     bool areColorTypeAndFormatCompatible(GrColorType grCT, const GrBackendFormat& format) const;
 
     /** These are used when creating a new texture internally. */
     GrBackendFormat getDefaultBackendFormat(GrColorType, GrRenderable) const;
 
-    virtual GrBackendFormat getBackendFormatFromCompressionType(SkImage::CompressionType) const = 0;
+    virtual GrBackendFormat getBackendFormatFromCompressionType(SkTextureCompressionType) const = 0;
 
     /**
      * The CLAMP_TO_BORDER wrap mode for texture coordinates was added to desktop GL in 1.3, and
@@ -456,6 +497,8 @@ public:
     virtual skgpu::Swizzle getWriteSwizzle(const GrBackendFormat&, GrColorType) const = 0;
 
     virtual uint64_t computeFormatKey(const GrBackendFormat&) const = 0;
+
+    skgpu::GpuStatsFlags supportedGpuStats() const { return fSupportedGpuStats; }
 
     const GrDriverBugWorkarounds& workarounds() const { return fDriverBugWorkarounds; }
 
@@ -480,7 +523,7 @@ public:
         // approach, but inline uploads are very rare and already slow.
         kVulkanHasResolveLoadSubpass = 0x1,
     };
-    GR_DECL_BITFIELD_CLASS_OPS_FRIENDS(ProgramDescOverrideFlags);
+    SK_DECL_BITFIELD_CLASS_OPS_FRIENDS(ProgramDescOverrideFlags);
 
 
     virtual GrProgramDesc makeDesc(
@@ -507,6 +550,13 @@ public:
         return fAvoidDithering;
     }
 
+    bool disablePerspectiveSDFText() const {
+        return fDisablePerspectiveSDFText;
+    }
+
+    // anglebug.com/7796
+    bool avoidLineDraws() const { return fAvoidLineDraws; }
+
     /**
      * Checks whether the passed color type is renderable. If so, the same color type is passed
      * back along with the default format used for the color type. If not, provides an alternative
@@ -516,13 +566,8 @@ public:
     std::tuple<GrColorType, GrBackendFormat> getFallbackColorTypeAndFormat(GrColorType,
                                                                            int sampleCount) const;
 
-#if GR_TEST_UTILS
-    struct TestFormatColorTypeCombination {
-        GrColorType fColorType;
-        GrBackendFormat fFormat;
-    };
-
-    virtual std::vector<TestFormatColorTypeCombination> getTestingCombinations() const = 0;
+#if defined(GPU_TEST_UTILS)
+    virtual std::vector<GrTest::TestFormatColorTypeCombination> getTestingCombinations() const = 0;
 #endif
 
 protected:
@@ -530,6 +575,12 @@ protected:
     // the caps (including overrides requested by the client).
     // NOTE: this method will only reduce the caps, never expand them.
     void finishInitialization(const GrContextOptions& options);
+
+#if defined(GPU_TEST_UTILS)
+    void setDeviceName(const char* n) {
+        fDeviceName = n;
+    }
+#endif
 
     virtual bool onSupportsDynamicMSAA(const GrRenderTargetProxy*) const { return false; }
 
@@ -556,6 +607,7 @@ protected:
     bool fPreferFullscreenClears                     : 1;
     bool fTwoSidedStencilRefsAndMasksMustMatch       : 1;
     bool fMustClearUploadedBufferData                : 1;
+    bool fBuffersAreInitiallyZero                    : 1;
     bool fShouldInitializeTextures                   : 1;
     bool fSupportsAHardwareBufferImages              : 1;
     bool fHalfFloatVertexAttributeSupport            : 1;
@@ -566,6 +618,7 @@ protected:
     bool fPerformStencilClearsAsDraws                : 1;
     bool fTransferFromBufferToTextureSupport         : 1;
     bool fTransferFromSurfaceToBufferSupport         : 1;
+    bool fTransferFromBufferToBufferSupport          : 1;
     bool fWritePixelsRowBytesSupport                 : 1;
     bool fTransferPixelsToRowBytesSupport            : 1;
     bool fReadPixelsRowBytesSupport                  : 1;
@@ -576,22 +629,26 @@ protected:
     bool fDisableTessellationPathRenderer            : 1;
     bool fAvoidStencilBuffers                        : 1;
     bool fAvoidWritePixelsFastPath                   : 1;
-    bool fRequiresManualFBBarrierAfterTessellatedStencilDraw : 1;
     bool fNativeDrawIndexedIndirectIsBroken          : 1;
     bool fAvoidReorderingRenderTasks                 : 1;
     bool fAvoidDithering                             : 1;
+    bool fDisablePerspectiveSDFText                  : 1;
+    bool fAvoidLineDraws                             : 1;
 
     // ANGLE performance workaround
     bool fPreferVRAMUseOverFlushes                   : 1;
 
-    bool fFenceSyncSupport                           : 1;
     bool fSemaphoreSupport                           : 1;
+    bool fBackendSemaphoreSupport                    : 1;
+    bool fFinishedProcAsyncCallbackSupport           : 1;
 
     // Requires fence sync support in GL.
     bool fCrossContextTextureSupport                 : 1;
 
     // Not (yet) implemented in VK backend.
     bool fDynamicStateArrayGeometryProcessorTextureSupport : 1;
+
+    bool fSupportsProtectedContent                   : 1;
 
     BlendEquationSupport fBlendEquationSupport;
     uint32_t fAdvBlendEqDisableFlags;
@@ -607,9 +664,17 @@ protected:
     int fMaxWindowRectangles;
     int fInternalMultisampleCount;
     uint32_t fMaxPushConstantsSize = 0;
-    size_t fTransferBufferAlignment = 1;
+    size_t fTransferBufferRowBytesAlignment = 1;
+    size_t fTransferFromBufferToBufferAlignment = 1;
+    size_t fBufferUpdateDataPreserveAlignment = 1;
+
+    skgpu::GpuStatsFlags fSupportedGpuStats = skgpu::GpuStatsFlags::kNone;
 
     GrDriverBugWorkarounds fDriverBugWorkarounds;
+
+#if defined(GPU_TEST_UTILS)
+    std::string fDeviceName;
+#endif
 
 private:
     void applyOptionsOverrides(const GrContextOptions& options);
@@ -617,8 +682,8 @@ private:
     virtual void onApplyOptionsOverrides(const GrContextOptions&) {}
     virtual void onDumpJSON(SkJSONWriter*) const {}
     virtual bool onSurfaceSupportsWritePixels(const GrSurface*) const = 0;
-    virtual bool onCanCopySurface(const GrSurfaceProxy* dst, const GrSurfaceProxy* src,
-                                  const SkIRect& srcRect, const SkIPoint& dstPoint) const = 0;
+    virtual bool onCanCopySurface(const GrSurfaceProxy* dst, const SkIRect& dstRect,
+                                  const GrSurfaceProxy* src, const SkIRect& srcRect) const = 0;
     virtual GrBackendFormat onGetDefaultBackendFormat(GrColorType) const = 0;
 
     // Backends should implement this if they have any extra requirements for use of window
@@ -645,6 +710,6 @@ private:
     using INHERITED = SkRefCnt;
 };
 
-GR_MAKE_BITFIELD_CLASS_OPS(GrCaps::ProgramDescOverrideFlags)
+SK_MAKE_BITFIELD_CLASS_OPS(GrCaps::ProgramDescOverrideFlags)
 
 #endif

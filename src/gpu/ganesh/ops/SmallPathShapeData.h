@@ -4,16 +4,26 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #ifndef SmallPathShapeData_DEFINED
 #define SmallPathShapeData_DEFINED
 
-#include "src/core/SkOpts.h"
-#include "src/gpu/ganesh/GrDrawOpAtlas.h"
+#include "include/core/SkTypes.h"
+
+#if !defined(SK_ENABLE_OPTIMIZE_SIZE)
+
+#include "include/core/SkRect.h"
+#include "include/private/base/SkTemplates.h"
+#include "src/base/SkTInternalLList.h"
+#include "src/core/SkChecksum.h"
+#include "src/gpu/AtlasTypes.h"
+
+#include <cstdint>
+#include <cstring>
 
 class GrStyledShape;
+class SkMatrix;
 
-namespace skgpu::v1 {
+namespace skgpu::ganesh {
 
 class SmallPathShapeDataKey {
 public:
@@ -43,7 +53,7 @@ private:
     // The key is composed of the GrStyledShape's key, and either the dimensions of the DF
     // generated for the path (32x32 max, 64x64 max, 128x128 max) if an SDF image or
     // the matrix for the path with only fractional translation.
-    SkAutoSTArray<24, uint32_t> fKey;
+    skia_private::AutoSTArray<24, uint32_t> fKey;
 };
 
 class SmallPathShapeData {
@@ -61,10 +71,12 @@ public:
     }
 
     static inline uint32_t Hash(const SmallPathShapeDataKey& key) {
-        return SkOpts::hash(key.data(), sizeof(uint32_t) * key.count32());
+        return SkChecksum::Hash32(key.data(), sizeof(uint32_t) * key.count32());
     }
 };
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh
+
+#endif // SK_ENABLE_OPTIMIZE_SIZE
 
 #endif // SmallPathShapeData_DEFINED

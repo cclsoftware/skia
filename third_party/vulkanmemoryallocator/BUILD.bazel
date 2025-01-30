@@ -1,23 +1,12 @@
-load("//bazel:macros.bzl", "cc_library", "exports_files_legacy")
-
-exports_files_legacy()
+package(
+    default_applicable_licenses = ["//:license"],
+)
 
 licenses(["notice"])
+# TODO(kjlubick) remove this after G3 rolls
 
-cc_library(
+alias(
     name = "vulkanmemoryallocator",
-    srcs = [
-        "GrVulkanMemoryAllocator.cpp",
-    ],
-    hdrs = [
-        "GrVulkanMemoryAllocator.h",
-    ],
-    includes = [
-        ".",
-    ],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        "//include/third_party/vulkan:skias_vulkan_headers",
-        "@vulkanmemoryallocator//:hdrs",
-    ],
+    actual = "//src/gpu/vk/vulkanmemoryallocator:vulkanmemoryallocator",
+    visibility = ["//visibility:public"],
 )

@@ -8,18 +8,28 @@
 #ifndef GrMeshDrawOp_DEFINED
 #define GrMeshDrawOp_DEFINED
 
+#include "include/core/SkRefCnt.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
 #include "src/gpu/ganesh/GrAppliedClip.h"
-#include "src/gpu/ganesh/GrGeometryProcessor.h"
 #include "src/gpu/ganesh/ops/GrDrawOp.h"
-#include <type_traits>
 
-class SkArenaAlloc;
-class GrAtlasManager;
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+
+class GrBuffer;
 class GrCaps;
+class GrDstProxyView;
+class GrGeometryProcessor;
 class GrMeshDrawTarget;
 class GrOpFlushState;
+class GrProgramInfo;
+class GrRecordingContext;
+class GrSurfaceProxy;
+class GrSurfaceProxyView;
+class SkArenaAlloc;
+enum class GrXferBarrierFlags;
 struct GrSimpleMesh;
-class GrStrikeCache;
 
 /**
  * Base class for mesh-drawing GrDrawOps.

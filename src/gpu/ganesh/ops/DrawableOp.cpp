@@ -8,13 +8,13 @@
 #include "src/gpu/ganesh/ops/DrawableOp.h"
 
 #include "include/core/SkDrawable.h"
-#include "include/gpu/GrRecordingContext.h"
-#include "src/gpu/ganesh/GrMemoryPool.h"
+#include "include/private/base/SkAssert.h"
 #include "src/gpu/ganesh/GrOpFlushState.h"
 #include "src/gpu/ganesh/GrOpsRenderPass.h"
-#include "src/gpu/ganesh/GrRecordingContextPriv.h"
 
-namespace skgpu::v1 {
+#include <utility>
+
+namespace skgpu::ganesh {
 
 GrOp::Owner DrawableOp::Make(GrRecordingContext* context,
                              std::unique_ptr<SkDrawable::GpuDrawHandler> drawable,
@@ -34,4 +34,4 @@ void DrawableOp::onExecute(GrOpFlushState* state, const SkRect& chainBounds) {
     state->opsRenderPass()->executeDrawable(std::move(fDrawable));
 }
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh

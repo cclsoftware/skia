@@ -8,37 +8,23 @@
 #ifndef skgpu_graphite_TextureInfo_DEFINED
 #define skgpu_graphite_TextureInfo_DEFINED
 
+#include "include/core/SkString.h"
+#include "include/core/SkTextureCompressionType.h"
 #include "include/gpu/graphite/GraphiteTypes.h"
+#include "include/private/base/SkAPI.h"
+#include "include/private/base/SkAnySubclass.h"
 
-#ifdef SK_METAL
-#include "include/private/gpu/graphite/MtlTypesPriv.h"
-#endif
+struct SkISize;
 
 namespace skgpu::graphite {
 
-// Forward declares so we can friend classes in other namespaces
-#ifdef SK_METAL
-namespace graphite {
-    class MtlCaps;
-    class MtlTexture;
-}
-#endif
+class TextureInfoData;
 
-class TextureInfo {
+class SK_API TextureInfo {
 public:
-    TextureInfo() {}
-#ifdef SK_METAL
-    TextureInfo(const MtlTextureInfo& mtlInfo)
-            : fBackend(BackendApi::kMetal)
-            , fValid(true)
-            , fSampleCount(mtlInfo.fSampleCount)
-            , fLevelCount(mtlInfo.fLevelCount)
-            , fProtected(Protected::kNo)
-            , fMtlSpec(mtlInfo) {}
-#endif
-
-    ~TextureInfo() {}
-    TextureInfo(const TextureInfo&) = default;
+    TextureInfo();
+    ~TextureInfo();
+    TextureInfo(const TextureInfo&);
     TextureInfo& operator=(const TextureInfo&);
 
     bool operator==(const TextureInfo&) const;
@@ -48,42 +34,52 @@ public:
     BackendApi backend() const { return fBackend; }
 
     uint32_t numSamples() const { return fSampleCount; }
-    uint32_t numMipLevels() const { return fLevelCount; }
+    Mipmapped mipmapped() const { return fMipmapped; }
     Protected isProtected() const { return fProtected; }
+    SkTextureCompressionType compressionType() const;
+    bool isMemoryless() const;
 
-#ifdef SK_METAL
-    bool getMtlTextureInfo(MtlTextureInfo* info) const {
-        if (!this->isValid() || fBackend != BackendApi::kMetal) {
-            return false;
-        }
-        *info = MtlTextureSpecToTextureInfo(fMtlSpec, fSampleCount, fLevelCount);
-        return true;
-    }
-#endif
+    bool isCompatible(const TextureInfo& that) const;
+    // Return a string containing the full description of this TextureInfo.
+    SkString toString() const;
+    // Return a string containing only the info relevant for its use as a RenderPass attachment.
+    SkString toRPAttachmentString() const;
 
 private:
-#ifdef SK_METAL
-    friend class MtlCaps;
-    friend class MtlGraphicsPipeline;
-    friend class MtlTexture;
-    const MtlTextureSpec& mtlTextureSpec() const {
-        SkASSERT(fValid && fBackend == BackendApi::kMetal);
-        return fMtlSpec;
+    friend class TextureInfoData;
+    friend class TextureInfoPriv;
+
+    // Size determined by looking at the TextureInfoData subclasses, then guessing-and-checking.
+    // Compiler will complain if this is too small - in that case, just increase the number.
+    inline constexpr static size_t kMaxSubclassSize = 112;
+    using AnyTextureInfoData = SkAnySubclass<TextureInfoData, kMaxSubclassSize>;
+
+    template <typename SomeTextureInfoData>
+    TextureInfo(BackendApi backend,
+                uint32_t sampleCount,
+                skgpu::Mipmapped mipped,
+                skgpu::Protected isProtected,
+                const SomeTextureInfoData& textureInfoData)
+            : fBackend(backend)
+            , fValid(true)
+            , fSampleCount(sampleCount)
+            , fMipmapped(mipped)
+            , fProtected(isProtected) {
+        fTextureInfoData.emplace<SomeTextureInfoData>(textureInfoData);
     }
-#endif
+
+    friend size_t ComputeSize(SkISize dimensions, const TextureInfo&);  // for bytesPerPixel
+
+    size_t bytesPerPixel() const;
 
     BackendApi fBackend = BackendApi::kMock;
     bool fValid = false;
 
     uint32_t fSampleCount = 1;
-    uint32_t fLevelCount = 0;
+    Mipmapped fMipmapped = Mipmapped::kNo;
     Protected fProtected = Protected::kNo;
 
-    union {
-#ifdef SK_METAL
-        MtlTextureSpec fMtlSpec;
-#endif
-    };
+    AnyTextureInfoData fTextureInfoData;
 };
 
 }  // namespace skgpu::graphite

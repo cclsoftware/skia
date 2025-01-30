@@ -7,6 +7,7 @@
 
 #include "src/gpu/ganesh/mtl/GrMtlRenderTarget.h"
 
+#include "include/gpu/ganesh/mtl/GrMtlBackendSurface.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
 #include "src/gpu/ganesh/GrResourceProvider.h"
 #include "src/gpu/ganesh/mtl/GrMtlFramebuffer.h"
@@ -51,14 +52,15 @@ sk_sp<GrMtlRenderTarget> GrMtlRenderTarget::MakeWrappedRenderTarget(GrMtlGpu* gp
                                                                     id<MTLTexture> texture) {
     SkASSERT(nil != texture);
     SkASSERT(1 == texture.mipmapLevelCount);
-    if (@available(macOS 10.11, iOS 9.0, *)) {
+    if (@available(macOS 10.11, iOS 9.0, tvOS 9.0, *)) {
         SkASSERT(MTLTextureUsageRenderTarget & texture.usage);
     }
 
     sk_sp<GrMtlAttachment> textureAttachment =
             GrMtlAttachment::MakeWrapped(gpu, dimensions, texture,
                                          GrAttachment::UsageFlags::kColorAttachment,
-                                         GrWrapCacheable::kNo);
+                                         GrWrapCacheable::kNo,
+                                         /*label=*/"MtlAttachment_TextureAttachment");
 
     GrMtlRenderTarget* mtlRT;
     if (sampleCnt > 1) {
@@ -68,9 +70,12 @@ sk_sp<GrMtlRenderTarget> GrMtlRenderTarget::MakeWrappedRenderTarget(GrMtlGpu* gp
                 return nullptr;
             }
             auto rp = gpu->getContext()->priv().resourceProvider();
-            sk_sp<GrAttachment> msaaAttachment = rp->makeMSAAAttachment(
-                    dimensions, GrBackendFormat::MakeMtl(format), sampleCnt, GrProtected::kNo,
-                    GrMemoryless::kNo);
+            sk_sp<GrAttachment> msaaAttachment =
+                    rp->makeMSAAAttachment(dimensions,
+                                           GrBackendFormats::MakeMtl(format),
+                                           sampleCnt,
+                                           GrProtected::kNo,
+                                           GrMemoryless::kNo);
             if (!msaaAttachment) {
                 return nullptr;
             }
@@ -78,16 +83,18 @@ sk_sp<GrMtlRenderTarget> GrMtlRenderTarget::MakeWrappedRenderTarget(GrMtlGpu* gp
                     sk_sp<GrMtlAttachment>(static_cast<GrMtlAttachment*>(msaaAttachment.release()));
             mtlRT = new GrMtlRenderTarget(
                     gpu, dimensions, std::move(colorAttachment), std::move(textureAttachment),
-                    kWrapped, /*label=*/{});
+                    kWrapped, /*label=*/"MakeWrappedRenderTargetWithOneTextureSampleCount");
             mtlRT->setRequiresManualMSAAResolve();
         } else {
             SkASSERT(sampleCnt == static_cast<int>([texture sampleCount]));
             mtlRT = new GrMtlRenderTarget(gpu, dimensions, std::move(textureAttachment), nil,
-                                          kWrapped, /*label=*/{});
+                                          kWrapped,
+                                          /*label=*/"MakeWrappedRenderTargetWithManySampleCount");
         }
     } else {
         mtlRT = new GrMtlRenderTarget(gpu, dimensions, std::move(textureAttachment), nil,
-                                      kWrapped, /*label=*/{});
+                                      kWrapped,
+                                      /*label=*/"MakeWrappedRenderTargetWithOneOrLessSampleCount");
     }
 
     return sk_sp<GrMtlRenderTarget>(mtlRT);
@@ -101,11 +108,11 @@ GrMtlRenderTarget::~GrMtlRenderTarget() {
 GrBackendRenderTarget GrMtlRenderTarget::getBackendRenderTarget() const {
     GrMtlTextureInfo info;
     info.fTexture.reset(GrRetainPtrFromId(fColorAttachment->mtlTexture()));
-    return GrBackendRenderTarget(this->width(), this->height(), info);
+    return GrBackendRenderTargets::MakeMtl(this->width(), this->height(), info);
 }
 
 GrBackendFormat GrMtlRenderTarget::backendFormat() const {
-    return GrBackendFormat::MakeMtl(fColorAttachment->mtlFormat());
+    return GrBackendFormats::MakeMtl(fColorAttachment->mtlFormat());
 }
 
 static int renderpass_features_to_index(bool hasResolve, bool hasStencil) {
@@ -161,6 +168,21 @@ void GrMtlRenderTarget::onRelease() {
 bool GrMtlRenderTarget::completeStencilAttachment(GrAttachment* stencil, bool useMSAASurface) {
     SkASSERT(useMSAASurface == (this->numSamples() > 1));
     return true;
+}
+
+void GrMtlRenderTarget::onSetLabel() {
+    SkASSERT(fColorAttachment);
+    if (!this->getLabel().empty()) {
+        NSString* labelStr = @(this->getLabel().c_str());
+        if (fResolveAttachment) {
+            fColorAttachment->mtlTexture().label =
+                    [@"_Skia_MSAA_" stringByAppendingString:labelStr];
+            fResolveAttachment->mtlTexture().label =
+                    [@"_Skia_Resolve_" stringByAppendingString:labelStr];
+        } else {
+            fColorAttachment->mtlTexture().label = [@"_Skia_" stringByAppendingString:labelStr];
+        }
+    }
 }
 
 GR_NORETAIN_END

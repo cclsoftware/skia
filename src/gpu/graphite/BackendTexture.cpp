@@ -7,34 +7,39 @@
 
 #include "include/gpu/graphite/BackendTexture.h"
 
+#include "include/gpu/MutableTextureState.h"
+#include "src/gpu/graphite/BackendTexturePriv.h"
+
 namespace skgpu::graphite {
 
-BackendTexture::~BackendTexture() {}
+BackendTexture::BackendTexture() = default;
+
+BackendTexture::~BackendTexture() = default;
 
 BackendTexture::BackendTexture(const BackendTexture& that) {
     *this = that;
 }
 
+static inline void assert_is_supported_backend(const BackendApi& backend) {
+    SkASSERT(backend == BackendApi::kDawn ||
+             backend == BackendApi::kMetal ||
+             backend == BackendApi::kVulkan);
+}
+
 BackendTexture& BackendTexture::operator=(const BackendTexture& that) {
-    bool valid = this->isValid();
     if (!that.isValid()) {
         fInfo = {};
         return *this;
-    } else if (valid && this->backend() != that.backend()) {
-        valid = false;
     }
+    // We shouldn't be mixing backends.
+    SkASSERT(!this->isValid() || this->backend() == that.backend());
+    // If that was valid, it should have a supported backend.
+    assert_is_supported_backend(that.backend());
     fDimensions = that.fDimensions;
     fInfo = that.fInfo;
 
-    switch (that.backend()) {
-#ifdef SK_METAL
-        case BackendApi::kMetal:
-            fMtlTexture = that.fMtlTexture;
-            break;
-#endif
-        default:
-            SK_ABORT("Unsupport Backend");
-    }
+    fTextureData.reset();
+    that.fTextureData->copyTo(fTextureData);
     return *this;
 }
 
@@ -46,35 +51,11 @@ bool BackendTexture::operator==(const BackendTexture& that) const {
     if (fDimensions != that.fDimensions || fInfo != that.fInfo) {
         return false;
     }
-
-    switch (that.backend()) {
-#ifdef SK_METAL
-        case BackendApi::kMetal:
-            if (fMtlTexture != that.fMtlTexture) {
-                return false;
-            }
-            break;
-#endif
-        default:
-            SK_ABORT("Unsupport Backend");
-    }
-    return true;
+    assert_is_supported_backend(this->backend());
+    return fTextureData->equal(that.fTextureData.get());
 }
 
-#ifdef SK_METAL
-BackendTexture::BackendTexture(SkISize dimensions, MtlHandle mtlTexture)
-        : fDimensions(dimensions)
-        , fInfo(MtlTextureInfo(mtlTexture))
-        , fMtlTexture(mtlTexture) {}
-
-MtlHandle BackendTexture::getMtlTexture() const {
-    if (this->isValid() && this->backend() == BackendApi::kMetal) {
-        return fMtlTexture;
-    }
-    return nullptr;
-}
-
-#endif
+BackendTextureData::~BackendTextureData(){};
 
 } // namespace skgpu::graphite
 

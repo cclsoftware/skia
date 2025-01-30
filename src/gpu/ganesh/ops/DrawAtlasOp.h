@@ -8,15 +8,17 @@
 #ifndef DrawAtlasOp_DEFINED
 #define DrawAtlasOp_DEFINED
 
-#include "include/core/SkRefCnt.h"
-#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "include/core/SkColor.h"
 #include "src/gpu/ganesh/ops/GrOp.h"
 
 class GrPaint;
 class GrRecordingContext;
 class SkMatrix;
+enum class GrAAType : unsigned int;
+struct SkRSXform;
+struct SkRect;
 
-namespace skgpu::v1::DrawAtlasOp {
+namespace skgpu::ganesh::DrawAtlasOp {
 
 GrOp::Owner Make(GrRecordingContext*,
                  GrPaint&&,
@@ -27,6 +29,6 @@ GrOp::Owner Make(GrRecordingContext*,
                  const SkRect* rects,
                  const SkColor* colors);
 
-}  // namespace skgpu::v1::DrawAtlasOp
+}  // namespace skgpu::ganesh::DrawAtlasOp
 
 #endif // DrawAtlasOp_DEFINED

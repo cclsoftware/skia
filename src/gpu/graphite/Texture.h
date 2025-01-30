@@ -13,6 +13,12 @@
 #include "src/gpu/graphite/Resource.h"
 #include "src/gpu/graphite/ResourceTypes.h"
 
+namespace skgpu {
+class MutableTextureState;
+class RefCntedCallback;
+enum class Budgeted : bool;
+};
+
 namespace skgpu::graphite {
 
 class Texture : public Resource {
@@ -20,19 +26,38 @@ public:
     ~Texture() override;
 
     int numSamples() const { return fInfo.numSamples(); }
-    Mipmapped mipmapped() const { return Mipmapped(fInfo.numMipLevels() > 1); }
+    Mipmapped mipmapped() const { return fInfo.mipmapped(); }
 
     SkISize dimensions() const { return fDimensions; }
     const TextureInfo& textureInfo() const { return fInfo; }
 
+    void setReleaseCallback(sk_sp<RefCntedCallback>);
+
+    const char* getResourceType() const override { return "Texture"; }
+
+    const Texture* asTexture() const override { return this; }
+
 protected:
-    Texture(const Gpu*, SkISize dimensions, const TextureInfo& info, Ownership);
+    Texture(const SharedContext*,
+            SkISize dimensions,
+            const TextureInfo& info,
+            sk_sp<MutableTextureState> mutableState,
+            Ownership);
+
+    MutableTextureState* mutableState() const;
+
+    void invokeReleaseProc() override;
+
+    void onDumpMemoryStatistics(SkTraceMemoryDump* traceMemoryDump,
+                                const char* dumpName) const override;
 
 private:
     SkISize fDimensions;
     TextureInfo fInfo;
+    sk_sp<MutableTextureState> fMutableState;
+    sk_sp<RefCntedCallback> fReleaseCallback;
 };
 
-} // namepsace skgpu::graphite
+} // namespace skgpu::graphite
 
 #endif // skgpu_graphite_Texture_DEFINED

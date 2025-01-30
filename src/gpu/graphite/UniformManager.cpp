@@ -7,613 +7,293 @@
 
 #include "src/gpu/graphite/UniformManager.h"
 
-#include "include/core/SkMatrix.h"
-#include "include/private/SkHalf.h"
-#include "include/private/SkTemplates.h"
-#include "src/core/SkPipelineData.h"
-#include "src/core/SkUniform.h"
-#include "src/gpu/graphite/DrawTypes.h"
+#include "src/gpu/graphite/PipelineData.h"
 
 // ensure that these types are the sizes the uniform data is expecting
 static_assert(sizeof(int32_t) == 4);
 static_assert(sizeof(float) == 4);
-static_assert(sizeof(int16_t) == 2);
 static_assert(sizeof(SkHalf) == 2);
 
 namespace skgpu::graphite {
 
-//////////////////////////////////////////////////////////////////////////////
-template<typename BaseType>
-static constexpr size_t tight_vec_size(int vecLength) {
-    return sizeof(BaseType) * vecLength;
-}
+int UniformOffsetCalculator::advanceOffset(SkSLType type, int count) {
+    SkASSERT(SkSLTypeCanBeUniformValue(type));
 
-/**
- * From Section 7.6.2.2 "Standard Uniform Block Layout":
- *  1. If the member is a scalar consuming N basic machine units, the base alignment is N.
- *  2. If the member is a two- or four-component vector with components consuming N basic machine
- *     units, the base alignment is 2N or 4N, respectively.
- *  3. If the member is a three-component vector with components consuming N
- *     basic machine units, the base alignment is 4N.
- *  4. If the member is an array of scalars or vectors, the base alignment and array
- *     stride are set to match the base alignment of a single array element, according
- *     to rules (1), (2), and (3), and rounded up to the base alignment of a vec4. The
- *     array may have padding at the end; the base offset of the member following
- *     the array is rounded up to the next multiple of the base alignment.
- *  5. If the member is a column-major matrix with C columns and R rows, the
- *     matrix is stored identically to an array of C column vectors with R components each,
- *     according to rule (4).
- *  6. If the member is an array of S column-major matrices with C columns and
- *     R rows, the matrix is stored identically to a row of S × C column vectors
- *     with R components each, according to rule (4).
- *  7. If the member is a row-major matrix with C columns and R rows, the matrix
- *     is stored identically to an array of R row vectors with C components each,
- *     according to rule (4).
- *  8. If the member is an array of S row-major matrices with C columns and R
- *     rows, the matrix is stored identically to a row of S × R row vectors with C
- *    components each, according to rule (4).
- *  9. If the member is a structure, the base alignment of the structure is N, where
- *     N is the largest base alignment value of any of its members, and rounded
- *     up to the base alignment of a vec4. The individual members of this substructure are then
- *     assigned offsets by applying this set of rules recursively,
- *     where the base offset of the first member of the sub-structure is equal to the
- *     aligned offset of the structure. The structure may have padding at the end;
- *     the base offset of the member following the sub-structure is rounded up to
- *     the next multiple of the base alignment of the structure.
- * 10. If the member is an array of S structures, the S elements of the array are laid
- *     out in order, according to rule (9).
- */
-template<typename BaseType, int RowsOrVecLength = 1, int Cols = 1>
-struct Rules140 {
-    /**
-     * For an array of scalars or vectors this returns the stride between array elements. For
-     * matrices or arrays of matrices this returns the stride between columns of the matrix. Note
-     * that for single (non-array) scalars or vectors we don't require a stride.
-     */
-    static constexpr size_t Stride(int count) {
-        SkASSERT(count >= 1 || count == SkUniform::kNonArray);
-        static_assert(RowsOrVecLength >= 1 && RowsOrVecLength <= 4);
-        static_assert(Cols >= 1 && Cols <= 4);
-        if (Cols != 1) {
-            // This is a matrix or array of matrices. We return the stride between columns.
-            SkASSERT(RowsOrVecLength > 1);
-            return Rules140<BaseType, RowsOrVecLength>::Stride(1);
-        }
-        if (count == 0) {
-            // Stride doesn't matter for a non-array.
-            return RowsOrVecLength * sizeof(BaseType);
-        }
-
-        // Rule 4.
-
-        // Alignment of vec4 by Rule 2.
-        constexpr size_t kVec4Alignment = tight_vec_size<float>(4);
-        // Get alignment of a single vector of BaseType by Rule 1, 2, or 3
-        int n = RowsOrVecLength == 3 ? 4 : RowsOrVecLength;
-        size_t kElementAlignment = tight_vec_size<BaseType>(n);
-        // Round kElementAlignment up to multiple of kVec4Alignment.
-        size_t m = (kElementAlignment + kVec4Alignment - 1) / kVec4Alignment;
-        return m * kVec4Alignment;
-    }
-};
-
-/**
- * When using the std430 storage layout, shader storage blocks will be laid out in buffer storage
- * identically to uniform and shader storage blocks using the std140 layout, except that the base
- * alignment and stride of arrays of scalars and vectors in rule 4 and of structures in rule 9 are
- * not rounded up a multiple of the base alignment of a vec4.
- */
-template<typename BaseType, int RowsOrVecLength = 1, int Cols = 1>
-struct Rules430 {
-    static constexpr size_t Stride(int count) {
-        SkASSERT(count >= 1 || count == SkUniform::kNonArray);
-        static_assert(RowsOrVecLength >= 1 && RowsOrVecLength <= 4);
-        static_assert(Cols >= 1 && Cols <= 4);
-
-        if (Cols != 1) {
-            // This is a matrix or array of matrices. We return the stride between columns.
-            SkASSERT(RowsOrVecLength > 1);
-            return Rules430<BaseType, RowsOrVecLength>::Stride(1);
-        }
-        if (count == 0) {
-            // Stride doesn't matter for a non-array.
-            return RowsOrVecLength * sizeof(BaseType);
-        }
-        // Rule 4 without the round up to a multiple of align-of vec4.
-        return tight_vec_size<BaseType>(RowsOrVecLength == 3 ? 4 : RowsOrVecLength);
-    }
-};
-
-// The strides used here were derived from the rules we've imposed on ourselves in
-// GrMtlPipelineStateDataManger. Everything is tight except 3-component which have the stride of
-// their 4-component equivalents.
-template<typename BaseType, int RowsOrVecLength = 1, int Cols = 1>
-struct RulesMetal {
-    static constexpr size_t Stride(int count) {
-        SkASSERT(count >= 1 || count == SkUniform::kNonArray);
-        static_assert(RowsOrVecLength >= 1 && RowsOrVecLength <= 4);
-        static_assert(Cols >= 1 && Cols <= 4);
-        if (Cols != 1) {
-            // This is a matrix or array of matrices. We return the stride between columns.
-            SkASSERT(RowsOrVecLength > 1);
-            return RulesMetal<BaseType, RowsOrVecLength>::Stride(1);
-        }
-        if (count == 0) {
-            // Stride doesn't matter for a non-array.
-            return RowsOrVecLength * sizeof(BaseType);
-        }
-        return tight_vec_size<BaseType>(RowsOrVecLength == 3 ? 4 : RowsOrVecLength);
-    }
-};
-
-template<template<typename BaseType, int RowsOrVecLength, int Cols> class Rules>
-class Writer {
-private:
-    template <typename MemType, typename UniformType>
-    static void CopyUniforms(void* dst, const void* src, int numUniforms) {
-        if constexpr (std::is_same<MemType, UniformType>::value) {
-            // Matching types--use memcpy.
-            std::memcpy(dst, src, numUniforms * sizeof(MemType));
-            return;
-        }
-
-        if constexpr (std::is_same<MemType, float>::value &&
-                      std::is_same<UniformType, SkHalf>::value) {
-            // Convert floats to half.
-            const float* floatBits = static_cast<const float*>(src);
-            SkHalf* halfBits = static_cast<SkHalf*>(dst);
-            while (numUniforms-- > 0) {
-                *halfBits++ = SkFloatToHalf(*floatBits++);
-            }
-            return;
-        }
-
-        SK_ABORT("implement conversion from MemType to UniformType");
-    }
-
-    template <typename MemType, typename UniformType, int RowsOrVecLength = 1, int Cols = 1>
-    static uint32_t Write(void *dst, int n, const MemType src[]) {
-        size_t stride = Rules<UniformType, RowsOrVecLength, Cols>::Stride(n);
-        n = (n == SkUniform::kNonArray) ? 1 : n;
-        n *= Cols;
-
-        if (dst) {
-            if (stride == RowsOrVecLength * sizeof(UniformType)) {
-                CopyUniforms<MemType, UniformType>(dst, src, n * RowsOrVecLength);
-            } else {
-                for (int i = 0; i < n; ++i) {
-                    CopyUniforms<MemType, UniformType>(dst, src, RowsOrVecLength);
-                    src += RowsOrVecLength;
-                    dst = SkTAddOffset<void>(dst, stride);
-                }
-            }
-        }
-
-        return n * stride;
-    }
-
-    template <typename UniformType>
-    static uint32_t WriteSkMatrices(void *dst, int n, const SkMatrix m[]) {
-        // Stride() will give us the stride of each column, so mul by 3 to get matrix stride.
-        size_t stride = 3 * Rules<UniformType, 3, 3>::Stride(1);
-        n = std::max(n, 1);
-
-        if (dst) {
-            size_t offset = 0;
-            for (int i = 0; i < n; ++i) {
-                float mt[] = {
-                        m[i].get(SkMatrix::kMScaleX),
-                        m[i].get(SkMatrix::kMSkewY),
-                        m[i].get(SkMatrix::kMPersp0),
-                        m[i].get(SkMatrix::kMSkewX),
-                        m[i].get(SkMatrix::kMScaleY),
-                        m[i].get(SkMatrix::kMPersp1),
-                        m[i].get(SkMatrix::kMTransX),
-                        m[i].get(SkMatrix::kMTransY),
-                        m[i].get(SkMatrix::kMPersp2),
-                };
-                Write<float, UniformType, 3, 3>(SkTAddOffset<void>(dst, offset), 1, mt);
-                offset += stride;
-            }
-        }
-        return n * stride;
-    }
-
-public:
-    static uint32_t WriteUniform(SkSLType type,
-                                 CType ctype,
-                                 void *dest,
-                                 int n,
-                                 const void *src) {
-        SkASSERT(n >= 1 || n == SkUniform::kNonArray);
-        switch (type) {
-            case SkSLType::kInt:
-                return Write<int32_t, int32_t>(dest, n, static_cast<const int32_t *>(src));
-
-            case SkSLType::kInt2:
-                return Write<int32_t, int32_t, 2>(dest, n, static_cast<const int32_t *>(src));
-
-            case SkSLType::kInt3:
-                return Write<int32_t, int32_t, 3>(dest, n, static_cast<const int32_t *>(src));
-
-            case SkSLType::kInt4:
-                return Write<int32_t, int32_t, 4>(dest, n, static_cast<const int32_t *>(src));
-
-            case SkSLType::kHalf:
-                return Write<float, SkHalf>(dest, n, static_cast<const float *>(src));
-
-            case SkSLType::kFloat:
-                return Write<float, float>(dest, n, static_cast<const float *>(src));
-
-            case SkSLType::kHalf2:
-                return Write<float, SkHalf, 2>(dest, n, static_cast<const float *>(src));
-
-            case SkSLType::kFloat2:
-                return Write<float, float, 2>(dest, n, static_cast<const float *>(src));
-
-            case SkSLType::kHalf3:
-                return Write<float, SkHalf, 3>(dest, n, static_cast<const float *>(src));
-
-            case SkSLType::kFloat3:
-                return Write<float, float, 3>(dest, n, static_cast<const float *>(src));
-
-            case SkSLType::kHalf4:
-                return Write<float, SkHalf, 4>(dest, n, static_cast<const float *>(src));
-
-            case SkSLType::kFloat4:
-                return Write<float, float, 4>(dest, n, static_cast<const float *>(src));
-
-            case SkSLType::kHalf2x2:
-                return Write<float, SkHalf, 2, 2>(dest, n, static_cast<const float *>(src));
-
-            case SkSLType::kFloat2x2:
-                return Write<float, float, 2, 2>(dest, n, static_cast<const float *>(src));
-
-            case SkSLType::kHalf3x3:
-                switch (ctype) {
-                    case CType::kDefault:
-                        return Write<float, SkHalf, 3, 3>(dest, n, static_cast<const float *>(src));
-                    case CType::kSkMatrix:
-                        return WriteSkMatrices<SkHalf>(dest, n, static_cast<const SkMatrix *>(src));
-                }
-                SkUNREACHABLE;
-
-            case SkSLType::kFloat3x3:
-                switch (ctype) {
-                    case CType::kDefault:
-                        return Write<float, float, 3, 3>(dest, n, static_cast<const float *>(src));
-                    case CType::kSkMatrix:
-                        return WriteSkMatrices<float>(dest, n, static_cast<const SkMatrix *>(src));
-                }
-                SkUNREACHABLE;
-
-            case SkSLType::kHalf4x4:
-                return Write<float, SkHalf, 4, 4>(dest, n, static_cast<const float *>(src));
-
-            case SkSLType::kFloat4x4:
-                return Write<float, float, 4, 4>(dest, n, static_cast<const float *>(src));
-
-            default:
-                SK_ABORT("Unexpected uniform type");
-        }
-    }
-};
-
-#ifdef SK_DEBUG
-// To determine whether a current offset is aligned, we can just 'and' the lowest bits with the
-// alignment mask. A value of 0 means aligned, any other value is how many bytes past alignment we
-// are. This works since all alignments are powers of 2. The mask is always (alignment - 1).
-static uint32_t sksltype_to_alignment_mask(SkSLType type) {
-    switch (type) {
-        case SkSLType::kInt:
-        case SkSLType::kUInt:
-        case SkSLType::kFloat:
-            return 0x3;
-        case SkSLType::kInt2:
-        case SkSLType::kUInt2:
-        case SkSLType::kFloat2:
-            return 0x7;
-        case SkSLType::kInt3:
-        case SkSLType::kUInt3:
-        case SkSLType::kFloat3:
-        case SkSLType::kInt4:
-        case SkSLType::kUInt4:
-        case SkSLType::kFloat4:
-            return 0xF;
-
-        case SkSLType::kFloat2x2:
-            return 0x7;
-        case SkSLType::kFloat3x3:
-            return 0xF;
-        case SkSLType::kFloat4x4:
-            return 0xF;
-
-        case SkSLType::kShort:
-        case SkSLType::kUShort:
-        case SkSLType::kHalf:
-            return 0x1;
-        case SkSLType::kShort2:
-        case SkSLType::kUShort2:
-        case SkSLType::kHalf2:
-            return 0x3;
-        case SkSLType::kShort3:
-        case SkSLType::kShort4:
-        case SkSLType::kUShort3:
-        case SkSLType::kUShort4:
-        case SkSLType::kHalf3:
-        case SkSLType::kHalf4:
-            return 0x7;
-
-        case SkSLType::kHalf2x2:
-            return 0x3;
-        case SkSLType::kHalf3x3:
-            return 0x7;
-        case SkSLType::kHalf4x4:
-            return 0x7;
-
-        // This query is only valid for certain types.
-        case SkSLType::kVoid:
-        case SkSLType::kBool:
-        case SkSLType::kBool2:
-        case SkSLType::kBool3:
-        case SkSLType::kBool4:
-        case SkSLType::kTexture2DSampler:
-        case SkSLType::kTextureExternalSampler:
-        case SkSLType::kTexture2DRectSampler:
-        case SkSLType::kSampler:
-        case SkSLType::kTexture2D:
-        case SkSLType::kInput:
-            break;
-    }
-    SK_ABORT("Unexpected type");
-}
-
-/** Returns the size in bytes taken up in Metal buffers for SkSLTypes. */
-inline uint32_t sksltype_to_mtl_size(SkSLType type) {
-    switch (type) {
-        case SkSLType::kInt:
-        case SkSLType::kUInt:
-        case SkSLType::kFloat:
-            return 4;
-        case SkSLType::kInt2:
-        case SkSLType::kUInt2:
-        case SkSLType::kFloat2:
-            return 8;
-        case SkSLType::kInt3:
-        case SkSLType::kUInt3:
-        case SkSLType::kFloat3:
-        case SkSLType::kInt4:
-        case SkSLType::kUInt4:
-        case SkSLType::kFloat4:
-            return 16;
-
-        case SkSLType::kFloat2x2:
-            return 16;
-        case SkSLType::kFloat3x3:
-            return 48;
-        case SkSLType::kFloat4x4:
-            return 64;
-
-        case SkSLType::kShort:
-        case SkSLType::kUShort:
-        case SkSLType::kHalf:
-            return 2;
-        case SkSLType::kShort2:
-        case SkSLType::kUShort2:
-        case SkSLType::kHalf2:
-            return 4;
-        case SkSLType::kShort3:
-        case SkSLType::kShort4:
-        case SkSLType::kUShort3:
-        case SkSLType::kUShort4:
-        case SkSLType::kHalf3:
-        case SkSLType::kHalf4:
-            return 8;
-
-        case SkSLType::kHalf2x2:
-            return 8;
-        case SkSLType::kHalf3x3:
-            return 24;
-        case SkSLType::kHalf4x4:
-            return 32;
-
-        // This query is only valid for certain types.
-        case SkSLType::kVoid:
-        case SkSLType::kBool:
-        case SkSLType::kBool2:
-        case SkSLType::kBool3:
-        case SkSLType::kBool4:
-        case SkSLType::kTexture2DSampler:
-        case SkSLType::kTextureExternalSampler:
-        case SkSLType::kTexture2DRectSampler:
-        case SkSLType::kSampler:
-        case SkSLType::kTexture2D:
-        case SkSLType::kInput:
-            break;
-    }
-    SK_ABORT("Unexpected type");
-}
-
-// Given the current offset into the ubo, calculate the offset for the uniform we're trying to add
-// taking into consideration all alignment requirements. The uniformOffset is set to the offset for
-// the new uniform, and currentOffset is updated to be the offset to the end of the new uniform.
-static uint32_t get_ubo_aligned_offset(uint32_t* currentOffset,
-                                       uint32_t* maxAlignment,
-                                       SkSLType type,
-                                       int arrayCount) {
-    uint32_t alignmentMask = sksltype_to_alignment_mask(type);
-    if (alignmentMask > *maxAlignment) {
-        *maxAlignment = alignmentMask;
-    }
-    uint32_t offsetDiff = *currentOffset & alignmentMask;
-    if (offsetDiff != 0) {
-        offsetDiff = alignmentMask - offsetDiff + 1;
-    }
-    uint32_t uniformOffset = *currentOffset + offsetDiff;
-    SkASSERT(sizeof(float) == 4);
-    if (arrayCount) {
-        *currentOffset = uniformOffset + sksltype_to_mtl_size(type) * arrayCount;
+    int dimension = SkSLTypeMatrixSize(type);
+    if (dimension > 0) {
+        // All SkSL matrices are square and can be interpreted as an array of column vectors
+        count = std::max(count, 1) * dimension;
     } else {
-        *currentOffset = uniformOffset + sksltype_to_mtl_size(type);
+        dimension = SkSLTypeVecLength(type);
     }
-    return uniformOffset;
+    SkASSERT(1 <= dimension && dimension <= 4);
+
+    // Bump dimension up to 4 if the array or vec3 consumes 4 primitives per element
+    // NOTE: This affects the size, alignment already rounds up to a power of 2 automatically.
+    const bool isArray = count > Uniform::kNonArray;
+    if ((isArray && LayoutRules::AlignArraysAsVec4(fLayout)) ||
+        (dimension == 3 && (isArray || LayoutRules::PadVec3Size(fLayout)))) {
+        dimension = 4;
+    }
+
+    const int primitiveSize = LayoutRules::UseFullPrecision(fLayout) ||
+                              SkSLTypeIsFullPrecisionNumericType(type) ? 4 : 2;
+    const int align = SkNextPow2(dimension) * primitiveSize;
+    const int alignedOffset = SkAlignTo(fOffset, align);
+    fOffset = alignedOffset + dimension * primitiveSize * std::max(count, 1);
+    fReqAlignment = std::max(fReqAlignment, align);
+
+    return alignedOffset;
 }
-#endif // SK_DEBUG
 
-SkSLType UniformManager::getUniformTypeForLayout(SkSLType type) {
-    if (fLayout != Layout::kMetal) {
-        // GL/Vk expect uniforms in 32-bit precision. Convert lower-precision types to 32-bit.
-        switch (type) {
-            case SkSLType::kShort:            return SkSLType::kInt;
-            case SkSLType::kUShort:           return SkSLType::kUInt;
-            case SkSLType::kHalf:             return SkSLType::kFloat;
+int UniformOffsetCalculator::advanceStruct(const UniformOffsetCalculator& substruct, int count) {
+    SkASSERT(substruct.fLayout == fLayout); // Invalid if the layout rules used aren't consistent
 
-            case SkSLType::kShort2:           return SkSLType::kInt2;
-            case SkSLType::kUShort2:          return SkSLType::kUInt2;
-            case SkSLType::kHalf2:            return SkSLType::kFloat2;
+    // If array element strides are forced to 16-byte alignment, structs must also have their
+    // base alignment rounded up to 16-byte alignment, which should have been accounted for in
+    // 'substruct's constructor.
+    const int baseAlignment = substruct.requiredAlignment();
+    SkASSERT(!LayoutRules::AlignArraysAsVec4(fLayout) || SkIsAlign16(baseAlignment));
 
-            case SkSLType::kShort3:           return SkSLType::kInt3;
-            case SkSLType::kUShort3:          return SkSLType::kUInt3;
-            case SkSLType::kHalf3:            return SkSLType::kFloat3;
+    // Per layout rule #9, the struct size must be padded to its base alignment
+    // (see https://registry.khronos.org/OpenGL/specs/gl/glspec45.core.pdf#page=159).
+    const int alignedSize = SkAlignTo(substruct.size(), baseAlignment);
 
-            case SkSLType::kShort4:           return SkSLType::kInt4;
-            case SkSLType::kUShort4:          return SkSLType::kUInt4;
-            case SkSLType::kHalf4:            return SkSLType::kFloat4;
+    const int alignedOffset = SkAlignTo(fOffset, baseAlignment);
+    fOffset = alignedOffset + alignedSize * std::max(count, 1);
+    fReqAlignment = std::max(fReqAlignment, baseAlignment);
 
-            case SkSLType::kHalf2x2:          return SkSLType::kFloat2x2;
-            case SkSLType::kHalf3x3:          return SkSLType::kFloat3x3;
-            case SkSLType::kHalf4x4:          return SkSLType::kFloat4x4;
+    return alignedOffset;
+}
 
-            default:                        break;
+//////////////////////////////////////////////////////////////////////////////
+
+void UniformManager::resetWithNewLayout(Layout layout) {
+    fStorage.clear();
+    fLayout = layout;
+    fReqAlignment = 0;
+    fStructBaseAlignment = 0;
+    fWrotePaintColor = false;
+
+#ifdef SK_DEBUG
+    fOffsetCalculator = UniformOffsetCalculator::ForTopLevel(layout);
+    fSubstructCalculator = {};
+    fExpectedUniforms = {};
+    fExpectedUniformIndex = 0;
+#endif
+}
+
+static std::pair<SkSLType, int> adjust_for_matrix_type(SkSLType type, int count) {
+    // All Layouts flatten matrices and arrays of matrices into arrays of columns, so update
+    // 'type' to be the column type and either multiply 'count' by the number of columns for
+    // arrays of matrices, or set to exactly the number of columns for a "non-array" matrix.
+    switch(type) {
+        case SkSLType::kFloat2x2: return {SkSLType::kFloat2, 2*std::max(1, count)};
+        case SkSLType::kFloat3x3: return {SkSLType::kFloat3, 3*std::max(1, count)};
+        case SkSLType::kFloat4x4: return {SkSLType::kFloat4, 4*std::max(1, count)};
+
+        case SkSLType::kHalf2x2:  return {SkSLType::kHalf2,  2*std::max(1, count)};
+        case SkSLType::kHalf3x3:  return {SkSLType::kHalf3,  3*std::max(1, count)};
+        case SkSLType::kHalf4x4:  return {SkSLType::kHalf4,  4*std::max(1, count)};
+
+        // Otherwise leave type and count alone.
+        default:                  return {type, count};
+    }
+}
+
+void UniformManager::write(const Uniform& u, const void* data) {
+    SkASSERT(SkSLTypeCanBeUniformValue(u.type()));
+    SkASSERT(!u.isPaintColor()); // Must go through writePaintColor()
+
+    auto [type, count] = adjust_for_matrix_type(u.type(), u.count());
+    SkASSERT(SkSLTypeMatrixSize(type) < 0); // Matrix types should have been flattened
+
+    const bool fullPrecision = LayoutRules::UseFullPrecision(fLayout) || !IsHalfVector(type);
+    if (count == Uniform::kNonArray) {
+        if (fullPrecision) {
+            switch(SkSLTypeVecLength(type)) {
+                case 1: this->write<1, /*Half=*/false>(data, type); break;
+                case 2: this->write<2, /*Half=*/false>(data, type); break;
+                case 3: this->write<3, /*Half=*/false>(data, type); break;
+                case 4: this->write<4, /*Half=*/false>(data, type); break;
+            }
+        } else {
+            switch(SkSLTypeVecLength(type)) {
+                case 1: this->write<1, /*Half=*/true>(data, type); break;
+                case 2: this->write<2, /*Half=*/true>(data, type); break;
+                case 3: this->write<3, /*Half=*/true>(data, type); break;
+                case 4: this->write<4, /*Half=*/true>(data, type); break;
+            }
+        }
+    } else {
+        if (fullPrecision) {
+            switch(SkSLTypeVecLength(type)) {
+                case 1: this->writeArray<1, /*Half=*/false>(data, count, type); break;
+                case 2: this->writeArray<2, /*Half=*/false>(data, count, type); break;
+                case 3: this->writeArray<3, /*Half=*/false>(data, count, type); break;
+                case 4: this->writeArray<4, /*Half=*/false>(data, count, type); break;
+            }
+        } else {
+            switch(SkSLTypeVecLength(type)) {
+                case 1: this->writeArray<1, /*Half=*/true>(data, count, type); break;
+                case 2: this->writeArray<2, /*Half=*/true>(data, count, type); break;
+                case 3: this->writeArray<3, /*Half=*/true>(data, count, type); break;
+                case 4: this->writeArray<4, /*Half=*/true>(data, count, type); break;
+            }
         }
     }
-
-    return type;
 }
 
-UniformManager::UniformManager(Layout layout) : fLayout(layout) {
+#if defined(SK_DEBUG)
 
-    switch (layout) {
-        case Layout::kStd140:
-            fWriteUniform = Writer<Rules140>::WriteUniform;
-            break;
-        case Layout::kStd430:
-            fWriteUniform = Writer<Rules430>::WriteUniform;
-            break;
-        case Layout::kMetal:
-            fWriteUniform = Writer<RulesMetal>::WriteUniform;
-            break;
+bool UniformManager::checkBeginStruct(int baseAlignment) {
+    if (fExpectedUniformIndex > 0) {
+        return false; // Wrote a struct field before the struct was started
+    }
+    if (fSubstructCalculator.layout() == Layout::kInvalid) {
+        return false; // Not expecting to start a struct
+    }
+    if (fStructBaseAlignment > 0) {
+        return false; // Somehow already started a substruct
+    }
+    if (fExpectedUniforms.empty()) {
+        return false; // Empty substructs are not allowed
     }
 
-    this->reset();
+    // Assume the expected uniforms describe the whole substruct
+    auto structCalculator = UniformOffsetCalculator::ForStruct(fLayout);
+    for (const Uniform& f : fExpectedUniforms) {
+        structCalculator.advanceOffset(f.type(), f.count());
+    }
+    if (baseAlignment != structCalculator.requiredAlignment()) {
+        return false;
+    }
+    fSubstructStartingOffset = fOffsetCalculator.advanceStruct(structCalculator);
+    return true;
 }
 
-SkUniformDataBlock UniformManager::peekData() const {
-    return SkUniformDataBlock(SkMakeSpan(fStorage.begin(), fStorage.count()));
+bool UniformManager::checkEndStruct() {
+    if (fExpectedUniformIndex != (int) fExpectedUniforms.size()) {
+        return false; // Didn't write all the expected fields before ending the struct
+    }
+    if (fSubstructCalculator.layout() == Layout::kInvalid) {
+        return false; // Not expecting a struct
+    }
+    if (fStructBaseAlignment <= 0) {
+        return false; // Missing a beginStruct()
+    }
+
+    // `fStructCalculator` should now have been advanced equivalently to the substruct calculator
+    // used in checkBeginStruct() to calculate the expected starting offset.
+    const int structSize = SkAlignTo(fSubstructCalculator.size(),
+                                     fSubstructCalculator.requiredAlignment());
+    if (fStorage.size() != fSubstructStartingOffset + structSize) {
+        return false; // Somehow didn't end on the correct boundary
+    }
+    if (fReqAlignment != fOffsetCalculator.requiredAlignment() ||
+        fReqAlignment < fSubstructCalculator.requiredAlignment()) {
+        return false; // UniformManager's alignment got out of sync with expected alignment
+    }
+
+    // Reset the substruct calculator to mark that the struct has been completed
+    fSubstructCalculator = {};
+    return true;
 }
 
-void UniformManager::reset() {
-#ifdef SK_DEBUG
-    fCurUBOOffset = 0;
-    fCurUBOMaxAlignment = 0;
-#endif
-    fOffset = 0;
-    fStorage.rewind();
+bool UniformManager::checkExpected(const void* dst, SkSLType type, int count) {
+    if (fExpectedUniformIndex >= SkTo<int>(fExpectedUniforms.size())) {
+        // A write() outside of a UniformExpectationsVisitor or too many uniforms written for what
+        // is expected.
+        return false;
+    }
+    if (fSubstructCalculator.layout() != Layout::kInvalid) {
+        if (fStructBaseAlignment <= 0) {
+            // A write() that should be inside a struct, but missing a call to beginStruct()
+            return false;
+        }
+
+    } else if (fStructBaseAlignment > 0) {
+        // A substruct was started when it shouldn't have been
+        return false;
+    }
+
+    const Uniform& expected = fExpectedUniforms[fExpectedUniformIndex++];
+    if (!SkSLTypeCanBeUniformValue(expected.type())) {
+        // Not all types are supported as uniforms or supported by UniformManager
+        return false;
+    }
+
+    auto [expectedType, expectedCount] = adjust_for_matrix_type(expected.type(), expected.count());
+    if (expectedType != type || expectedCount != count) {
+        return false;
+    }
+
+    if (dst) {
+        // If we have 'dst', it's the aligned starting offset of the uniform being checked, so
+        // subtracting the address of the first byte in fStorage gives us the offset.
+        int offset = static_cast<int>(reinterpret_cast<intptr_t>(dst) -
+                                      reinterpret_cast<intptr_t>(fStorage.data()));
+
+        if (fSubstructCalculator.layout() == Layout::kInvalid) {
+            // Pass original expected type and count to the offset calculator for validation.
+            if (offset != fOffsetCalculator.advanceOffset(expected.type(), expected.count())) {
+                return false;
+            }
+            if (fReqAlignment != fOffsetCalculator.requiredAlignment()) {
+                return false;
+            }
+
+            // And if it is the paint color uniform, we should not have already written it
+            return !(fWrotePaintColor && expected.isPaintColor());
+        } else {
+            int relOffset = fSubstructCalculator.advanceOffset(expected.type(), expected.count());
+            if (offset != fSubstructStartingOffset + relOffset) {
+                return false;
+            }
+            // The overall required alignment might already be higher from prior fields, but should
+            // be at least what's required by the substruct.
+            if (fReqAlignment < fSubstructCalculator.requiredAlignment()) {
+                return false;
+            }
+
+            // And it should not be a paint color uniform within a substruct
+            return !expected.isPaintColor();
+        }
+    } else {
+        // If 'dst' is null, it's an already-visited paint color uniform, so it's not being written
+        // and not changing the offset, and should not be part of a substruct.
+        SkASSERT(fWrotePaintColor);
+        SkASSERT(fSubstructCalculator.layout() == Layout::kInvalid);
+        return expected.isPaintColor();
+    }
 }
 
-#ifdef SK_DEBUG
-void UniformManager::checkReset() const {
-    SkASSERT(fCurUBOOffset == 0);
-    SkASSERT(fCurUBOMaxAlignment == 0);
-    SkASSERT(fOffset == 0);
-    SkASSERT(fStorage.empty());
+bool UniformManager::isReset() const {
+    return fStorage.empty();
 }
 
-void UniformManager::setExpectedUniforms(SkSpan<const SkUniform> expectedUniforms) {
-    fExpectedUniforms = expectedUniforms;
+void UniformManager::setExpectedUniforms(SkSpan<const Uniform> expected, bool isSubstruct) {
+    fExpectedUniforms = expected;
     fExpectedUniformIndex = 0;
-}
 
-void UniformManager::checkExpected(SkSLType type, unsigned int count) {
-    SkASSERT(fExpectedUniforms.size());
-    SkASSERT(fExpectedUniformIndex >= 0 && fExpectedUniformIndex < (int)fExpectedUniforms.size());
-
-    SkASSERT(fExpectedUniforms[fExpectedUniformIndex].type() == type);
-    SkASSERT((fExpectedUniforms[fExpectedUniformIndex].count() == 0 && count == 1) ||
-             fExpectedUniforms[fExpectedUniformIndex].count() == count);
-    fExpectedUniformIndex++;
-
-    SkSLType revisedType = this->getUniformTypeForLayout(type);
-
-    uint32_t debugOffset = get_ubo_aligned_offset(&fCurUBOOffset,
-                                                  &fCurUBOMaxAlignment,
-                                                  revisedType,
-                                                  count);
-    SkASSERT(debugOffset == fOffset);
+    if (isSubstruct) {
+        // Start collecting the subsequent uniforms with a 0-based offset to determine their
+        // relative layout and required base alignment of the entire struct.
+        fSubstructCalculator = UniformOffsetCalculator::ForStruct(fLayout);
+    } else {
+        // Expected uniforms will advance fOffsetCalculator directly
+        SkASSERT(fSubstructCalculator.layout() == Layout::kInvalid);
+    }
 }
 
 void UniformManager::doneWithExpectedUniforms() {
     SkASSERT(fExpectedUniformIndex == static_cast<int>(fExpectedUniforms.size()));
+    // Any expected substruct should have been ended and validated inside endStruct(); if this fails
+    // it means there is a missing endStruct().
+    SkASSERT(fSubstructCalculator.layout() == Layout::kInvalid);
     fExpectedUniforms = {};
 }
+
 #endif // SK_DEBUG
-
-void UniformManager::write(SkSLType type, unsigned int count, const void* src) {
-    SkSLType revisedType = this->getUniformTypeForLayout(type);
-
-    uint32_t bytesNeeded = fWriteUniform(revisedType, CType::kDefault, nullptr, count, nullptr);
-    char* dst = fStorage.append(bytesNeeded);
-    uint32_t bytesWritten = fWriteUniform(revisedType, CType::kDefault, dst, count, src);
-    SkASSERT(bytesNeeded == bytesWritten);
-    fOffset += bytesWritten;
-}
-
-void UniformManager::write(const SkM44& mat) {
-    static const SkSLType kType = SkSLType::kFloat4x4;
-    SkDEBUGCODE(this->checkExpected(kType, 1);)
-    this->write(kType, 1, &mat);
-}
-
-void UniformManager::write(const SkColor4f* colors, int count) {
-    static const SkSLType kType = SkSLType::kFloat4;
-    SkDEBUGCODE(this->checkExpected(kType, count);)
-    this->write(kType, count, colors);
-}
-
-void UniformManager::write(const SkPMColor4f* premulColors, int count) {
-    static const SkSLType kType = SkSLType::kFloat4;
-    SkDEBUGCODE(this->checkExpected(kType, count);)
-    this->write(kType, count, premulColors);
-}
-
-void UniformManager::write(const SkRect& rect) {
-    static const SkSLType kType = SkSLType::kFloat4;
-    SkDEBUGCODE(this->checkExpected(kType, 1);)
-    this->write(kType, 1, &rect);
-}
-
-void UniformManager::write(SkPoint point) {
-    static const SkSLType kType = SkSLType::kFloat2;
-    SkDEBUGCODE(this->checkExpected(kType, 1);)
-    this->write(kType, 1, &point);
-}
-
-void UniformManager::write(const float* floats, int count) {
-    static const SkSLType kType = SkSLType::kFloat;
-    SkDEBUGCODE(this->checkExpected(kType, count);)
-    this->write(kType, count, floats);
-}
-
-void UniformManager::write(int i) {
-    static const SkSLType kType = SkSLType::kInt;
-    SkDEBUGCODE(this->checkExpected(kType, 1);)
-    this->write(kType, 1, &i);
-}
-
-void UniformManager::write(float2 v) {
-    static const SkSLType kType = SkSLType::kFloat2;
-    SkDEBUGCODE(this->checkExpected(kType, 1);)
-    this->write(kType, 1, &v);
-}
 
 } // namespace skgpu::graphite

@@ -1,26 +1,32 @@
 /*
- * Copyright 2020 Google LLC.
+ * Copyright 2020 Google LLC
  *
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/ops/AtlasInstancedHelper.h"
 
+#include "include/core/SkSize.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/core/SkSLTypeShared.h"
 #include "src/gpu/BufferWriter.h"
 #include "src/gpu/KeyBuilder.h"
+#include "src/gpu/ganesh/GrShaderVar.h"
 #include "src/gpu/ganesh/glsl/GrGLSLFragmentShaderBuilder.h"
+#include "src/gpu/ganesh/glsl/GrGLSLProgramDataManager.h"
 #include "src/gpu/ganesh/glsl/GrGLSLVarying.h"
 #include "src/gpu/ganesh/glsl/GrGLSLVertexGeoBuilder.h"
 
-namespace skgpu::v1 {
+using namespace skia_private;
+
+namespace skgpu::ganesh {
 
 void AtlasInstancedHelper::getKeyBits(KeyBuilder* b) const {
     b->addBits(kNumShaderFlags, (int)fShaderFlags, "atlasFlags");
 }
 
 void AtlasInstancedHelper::appendInstanceAttribs(
-        SkTArray<GrGeometryProcessor::Attribute>* instanceAttribs) const {
+        TArray<GrGeometryProcessor::Attribute>* instanceAttribs) const {
     instanceAttribs->emplace_back("locations", kFloat4_GrVertexAttribType, SkSLType::kFloat4);
     if (fShaderFlags & ShaderFlags::kCheckBounds) {
         instanceAttribs->emplace_back("sizeInAtlas", kFloat2_GrVertexAttribType, SkSLType::kFloat2);
@@ -54,18 +60,18 @@ void AtlasInstancedHelper::injectShaderCode(
     *atlasAdjustUniformHandle = args.fUniformHandler->addUniform(
             nullptr, kVertex_GrShaderFlag, SkSLType::kFloat2, "atlas_adjust", &atlasAdjustName);
 
-    args.fVertBuilder->codeAppendf(R"(
+    args.fVertBuilder->codeAppendf(
     // A negative x coordinate in the atlas indicates that the path is transposed.
     // We also added 1 since we can't negate zero.
-    float2 atlasTopLeft = float2(abs(locations.x) - 1, locations.y);
-    float2 devTopLeft = locations.zw;
-    bool transposed = locations.x < 0;
-    float2 atlasCoord = %s - devTopLeft;
-    if (transposed) {
-        atlasCoord = atlasCoord.yx;
-    }
-    atlasCoord += atlasTopLeft;
-    %s = atlasCoord * %s;)", devCoord.c_str(), atlasCoord.vsOut(), atlasAdjustName);
+    "float2 atlasTopLeft = float2(abs(locations.x) - 1, locations.y);"
+    "float2 devTopLeft = locations.zw;"
+    "bool transposed = locations.x < 0;"
+    "float2 atlasCoord = %s - devTopLeft;"
+    "if (transposed) {"
+        "atlasCoord = atlasCoord.yx;"
+    "}"
+    "atlasCoord += atlasTopLeft;"
+    "%s = atlasCoord * %s;", devCoord.c_str(), atlasCoord.vsOut(), atlasAdjustName);
 
     if (fShaderFlags & ShaderFlags::kCheckBounds) {
         GrGLSLVarying atlasBounds(SkSLType::kFloat4);
@@ -76,13 +82,13 @@ void AtlasInstancedHelper::injectShaderCode(
                                                              : sizeInAtlas.00xy);
         %s = atlasBounds * %s.xyxy;)", atlasBounds.vsOut(), atlasAdjustName);
 
-        args.fFragBuilder->codeAppendf(R"(
-        half atlasCoverage = 0;
-        float2 atlasCoord = %s;
-        float4 atlasBounds = %s;
-        if (all(greaterThan(atlasCoord, atlasBounds.xy)) &&
-            all(lessThan(atlasCoord, atlasBounds.zw))) {
-            atlasCoverage = )", atlasCoord.fsIn(), atlasBounds.fsIn());
+        args.fFragBuilder->codeAppendf(
+        "half atlasCoverage = 0;"
+        "float2 atlasCoord = %s;"
+        "float4 atlasBounds = %s;"
+        "if (all(greaterThan(atlasCoord, atlasBounds.xy)) &&"
+            "all(lessThan(atlasCoord, atlasBounds.zw))) {"
+            "atlasCoverage = ", atlasCoord.fsIn(), atlasBounds.fsIn());
         args.fFragBuilder->appendTextureLookup(args.fTexSamplers[0], "atlasCoord");
         args.fFragBuilder->codeAppendf(R"(.a;
         })");
@@ -107,4 +113,4 @@ void AtlasInstancedHelper::setUniformData(
     pdman.set2f(atlasAdjustUniformHandle, 1.f / dimensions.width(), 1.f / dimensions.height());
 }
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh

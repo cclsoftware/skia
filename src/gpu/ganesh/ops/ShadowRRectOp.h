@@ -8,7 +8,7 @@
 #ifndef ShadowRRectOp_DEFINED
 #define ShadowRRectOp_DEFINED
 
-#include <memory>
+#include "include/core/SkScalar.h"
 #include "src/gpu/ganesh/GrColor.h"
 #include "src/gpu/ganesh/ops/GrOp.h"
 
@@ -17,7 +17,7 @@ class GrRecordingContext;
 class SkMatrix;
 class SkRRect;
 
-namespace skgpu::v1::ShadowRRectOp {
+namespace skgpu::ganesh::ShadowRRectOp {
 
 GrOp::Owner Make(GrRecordingContext*,
                  GrColor,
@@ -26,6 +26,6 @@ GrOp::Owner Make(GrRecordingContext*,
                  SkScalar blurWidth,
                  SkScalar insetWidth);
 
-} // namespace skgpu::v1::ShadowRRectOp
+}  // namespace skgpu::ganesh::ShadowRRectOp
 
 #endif // ShadowRRectOp_DEFINED

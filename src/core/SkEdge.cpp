@@ -7,10 +7,12 @@
 
 #include "src/core/SkEdge.h"
 
-#include "include/private/SkTo.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/base/SkTo.h"
+#include "src/base/SkMathPriv.h"
 #include "src/core/SkFDot6.h"
-#include "src/core/SkMathPriv.h"
 
+#include <algorithm>
 #include <utility>
 
 /*
@@ -33,8 +35,26 @@ static inline SkFixed SkFDot6ToFixedDiv2(SkFDot6 value) {
 
 /////////////////////////////////////////////////////////////////////////
 
-int SkEdge::setLine(const SkPoint& p0, const SkPoint& p1, const SkIRect* clip,
-                    int shift) {
+#ifdef SK_DEBUG
+void SkEdge::dump() const {
+    int realLastY = SkScalarToFixed(fLastY);
+    if (fCurveCount > 0) {
+        realLastY = static_cast<const SkQuadraticEdge*>(this)->fQLastY;
+    } else if (fCurveCount < 0) {
+        realLastY = static_cast<const SkCubicEdge*>(this)->fCLastY;
+    }
+    SkDebugf("edge (%c): firstY:%d lastY:%d (%g) x:%g dx:%g w:%d\n",
+             fCurveCount > 0 ? 'Q' : (fCurveCount < 0 ? 'C' : 'L'),
+             fFirstY,
+             fLastY,
+             SkFixedToFloat(realLastY),
+             SkFixedToFloat(fX),
+             SkFixedToFloat(fDX),
+             fWinding);
+}
+#endif
+
+int SkEdge::setLine(const SkPoint& p0, const SkPoint& p1, const SkIRect* clip, int shift) {
     SkFDot6 x0, y0, x1, y1;
 
     {
@@ -80,6 +100,7 @@ int SkEdge::setLine(const SkPoint& p0, const SkPoint& p1, const SkIRect* clip,
     fDX         = slope;
     fFirstY     = top;
     fLastY      = bot - 1;
+    fEdgeType   = kLine_Type;
     fCurveCount = 0;
     fWinding    = SkToS8(winding);
     fCurveShift = 0;
@@ -172,7 +193,7 @@ static inline int diff_to_shift(SkFDot6 dx, SkFDot6 dy, int shiftAA = 2)
     // ... but small enough so that our curves still look smooth
     // When shift > 0, we're using AA and everything is scaled up so we can
     // lower the accuracy.
-    dist = (dist + (1 << 4)) >> (3 + shiftAA);
+    dist = (dist + (1 << (2 + shiftAA))) >> (3 + shiftAA);
 
     // each subdivision (shift value) cuts this dist (error) by 1/4
     return (32 - SkCLZ(dist)) >> 1;
@@ -236,6 +257,7 @@ bool SkQuadraticEdge::setQuadraticWithoutUpdate(const SkPoint pts[3], int shift)
 
     fWinding    = SkToS8(winding);
     //fCubicDShift only set for cubics
+    fEdgeType   = kQuad_Type;
     fCurveCount = SkToS8(1 << shift);
 
     /*
@@ -420,6 +442,7 @@ bool SkCubicEdge::setCubicWithoutUpdate(const SkPoint pts[4], int shift, bool so
     }
 
     fWinding    = SkToS8(winding);
+    fEdgeType   = kCubic_Type;
     fCurveCount = SkToS8(SkLeftShift(-1, shift));
     fCurveShift = SkToU8(shift);
     fCubicDShift = SkToU8(downShift);

@@ -8,13 +8,46 @@
 #ifndef GrVkCaps_DEFINED
 #define GrVkCaps_DEFINED
 
-#include "include/gpu/vk/GrVkTypes.h"
-#include "include/private/SkTDArray.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/gpu/vk/VulkanTypes.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkTArray.h"
+#include "include/private/base/SkTDArray.h"
+#include "include/private/base/SkTo.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "include/private/gpu/vk/SkiaVulkan.h"
+#include "src/gpu/Swizzle.h"
 #include "src/gpu/ganesh/GrCaps.h"
+#include "src/gpu/ganesh/GrProgramDesc.h"
+#include "src/gpu/ganesh/GrSamplerState.h"
 
-class GrVkExtensions;
-struct GrVkInterface;
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
+#include <memory>
+#include <vector>
+
+class GrProgramInfo;
+class GrRenderTarget;
+class GrRenderTargetProxy;
+class GrSurface;
+class GrSurfaceProxy;
 class GrVkRenderTarget;
+enum class SkTextureCompressionType;
+struct GrContextOptions;
+struct SkIRect;
+
+namespace GrTest {
+struct TestFormatColorTypeCombination;
+}
+
+namespace skgpu {
+class KeyBuilder;
+class VulkanExtensions;
+enum class Protected : bool;
+struct VulkanInterface;
+}  // namespace skgpu
 
 /**
  * Stores some capabilities of a Vk backend.
@@ -25,14 +58,14 @@ public:
      * Creates a GrVkCaps that is set such that nothing is supported. The init function should
      * be called to fill out the caps.
      */
-    GrVkCaps(const GrContextOptions& contextOptions,
-             const GrVkInterface* vkInterface,
-             VkPhysicalDevice device,
-             const VkPhysicalDeviceFeatures2& features,
+    GrVkCaps(const GrContextOptions&,
+             const skgpu::VulkanInterface*,
+             VkPhysicalDevice,
+             const VkPhysicalDeviceFeatures2&,
              uint32_t instanceVersion,
              uint32_t physicalDeviceVersion,
-             const GrVkExtensions& extensions,
-             GrProtected isProtected = GrProtected::kNo);
+             const skgpu::VulkanExtensions&,
+             skgpu::Protected);
 
     bool isFormatSRGB(const GrBackendFormat&) const override;
 
@@ -159,11 +192,12 @@ public:
         return 3;
     }
 
-    // Returns true if the device supports protected memory.
-    bool supportsProtectedMemory() const { return fSupportsProtectedMemory; }
-
     // Returns true if the VK_EXT_image_drm_format_modifier is enabled.
     bool supportsDRMFormatModifiers() const { return fSupportsDRMFormatModifiers; }
+
+    bool supportsDeviceFaultInfo() const { return fSupportsDeviceFaultInfo; }
+
+    bool supportsFrameBoundary() const { return fSupportsFrameBoundary; }
 
     // Returns whether we prefer to record draws directly into a primary command buffer.
     bool preferPrimaryOverSecondaryCommandBuffers() const {
@@ -181,10 +215,6 @@ public:
     bool mustInvalidatePrimaryCmdBufferStateAfterClearAttachments() const {
         return fMustInvalidatePrimaryCmdBufferStateAfterClearAttachments;
     }
-
-    // For host visible allocations, this returns true if we require that they are coherent. This
-    // is used to work around bugs for devices that don't handle non-coherent memory correctly.
-    bool mustUseCoherentHostVisibleMemory() const { return fMustUseCoherentHostVisibleMemory; }
 
     // Returns whether a pure GPU accessible buffer is more performant to read than a buffer that is
     // also host visible. If so then in some cases we may prefer the cost of doing a copy to the
@@ -230,7 +260,7 @@ public:
                           int srcSamplecnt,
                           bool srcHasYcbcr) const;
 
-    GrBackendFormat getBackendFormatFromCompressionType(SkImage::CompressionType) const override;
+    GrBackendFormat getBackendFormatFromCompressionType(SkTextureCompressionType) const override;
 
     VkFormat getFormatFromColorType(GrColorType colorType) const {
         int idx = static_cast<int>(colorType);
@@ -267,73 +297,90 @@ public:
 
     bool supportsMemorylessAttachments() const { return fSupportsMemorylessAttachments; }
 
-#if GR_TEST_UTILS
-    std::vector<TestFormatColorTypeCombination> getTestingCombinations() const override;
+#if defined(GPU_TEST_UTILS)
+    std::vector<GrTest::TestFormatColorTypeCombination> getTestingCombinations() const override;
 #endif
 
 private:
     enum VkVendor {
         kAMD_VkVendor = 4098,
         kARM_VkVendor = 5045,
+        kGoogle_VkVendor = 0x1AE0,
         kImagination_VkVendor = 4112,
         kIntel_VkVendor = 32902,
         kNvidia_VkVendor = 4318,
         kQualcomm_VkVendor = 20803,
     };
 
-    // Some common Intel GPU models, currently we cover ICL/RKL/TGL/ADL
-    // Referenced from the following Mesa source files:
-    // https://github.com/mesa3d/mesa/blob/master/include/pci_ids/i965_pci_ids.h
-    // https://github.com/mesa3d/mesa/blob/master/include/pci_ids/iris_pci_ids.h
-    struct VkIntelGPUInfo {
-        // IceLake
-        const std::array<uint32_t, 14> IceLake = {
-            {0x8A50, 0x8A51, 0x8A52, 0x8A53, 0x8A54, 0x8A56, 0x8A57,
-             0x8A58, 0x8A59, 0x8A5A, 0x8A5B, 0x8A5C, 0x8A5D, 0x8A71}};
-        // RocketLake
-        const std::array<uint32_t, 5> RocketLake = {
-            {0x4c8a, 0x4c8b, 0x4c8c, 0x4c90, 0x4c9a}};
-        // TigerLake
-        const std::array<uint32_t, 11> TigerLake = {
-            {0x9A40, 0x9A49, 0x9A59, 0x9A60, 0x9A68, 0x9A70,
-             0x9A78, 0x9AC0, 0x9AC9, 0x9AD9, 0x9AF8}};
-        // Alderlake
-        const std::array<uint32_t, 10> Alderlake = {
-            {0x4680, 0x4681, 0x4682, 0x4683, 0x4690,
-             0x4691, 0x4692, 0x4693, 0x4698, 0x4699}};
-    };
+    enum class IntelGPUType {
+        // 9th gen
+        kSkyLake,
 
-    enum class VkIntelGPUType {
         // 11th gen
-        kIntelIceLake,
+        kIceLake,
 
         // 12th gen
-        kIntelRocketLake,
-        kIntelTigerLake,
-        kIntelAlderLake,
+        kRocketLake,
+        kTigerLake,
+        kAlderLake,
 
         kOther
     };
 
-    void init(const GrContextOptions& contextOptions, const GrVkInterface* vkInterface,
-              VkPhysicalDevice device, const VkPhysicalDeviceFeatures2&,
-              uint32_t physicalDeviceVersion, const GrVkExtensions&, GrProtected isProtected);
-    void initGrCaps(const GrVkInterface* vkInterface,
+    enum DeviceID {
+        kSwiftshader_DeviceID = 0xC0DE, // As listed in Swiftshader code this may be a placeholder
+                                        // value but works for now.
+    };
+
+    static IntelGPUType GetIntelGPUType(uint32_t deviceID);
+    static int GetIntelGen(IntelGPUType type) {
+        switch (type) {
+            case IntelGPUType::kSkyLake:
+                return 9;
+            case IntelGPUType::kIceLake:
+                return 11;
+            case IntelGPUType::kRocketLake: // fall through
+            case IntelGPUType::kTigerLake:  // fall through
+            case IntelGPUType::kAlderLake:
+                return 12;
+            case IntelGPUType::kOther:
+                // For now all our workaround checks are in the form of "if gen > some_value". So
+                // we can return 0 for kOther which means we won't put in the new workaround for
+                // older gens which is fine. If we stay on top of adding support for new gen
+                // intel devices we shouldn't hit cases where we'd need to change this pattern.
+                return 0;
+        }
+        SkUNREACHABLE;
+    }
+
+    void init(const GrContextOptions&,
+              const skgpu::VulkanInterface*,
+              VkPhysicalDevice,
+              const VkPhysicalDeviceFeatures2&,
+              uint32_t physicalDeviceVersion,
+              const skgpu::VulkanExtensions&,
+              GrProtected);
+    void initGrCaps(const skgpu::VulkanInterface* vkInterface,
                     VkPhysicalDevice physDev,
                     const VkPhysicalDeviceProperties&,
                     const VkPhysicalDeviceMemoryProperties&,
                     const VkPhysicalDeviceFeatures2&,
-                    const GrVkExtensions&);
+                    const skgpu::VulkanExtensions&);
     void initShaderCaps(const VkPhysicalDeviceProperties&, const VkPhysicalDeviceFeatures2&);
 
-    void initFormatTable(const GrVkInterface*, VkPhysicalDevice, const VkPhysicalDeviceProperties&);
-    void initStencilFormat(const GrVkInterface* iface, VkPhysicalDevice physDev);
+    void initFormatTable(const GrContextOptions&,
+                         const skgpu::VulkanInterface*,
+                         VkPhysicalDevice,
+                         const VkPhysicalDeviceProperties&,
+                         const VkPhysicalDeviceFeatures2&,
+                         const skgpu::VulkanExtensions&);
+    void initStencilFormat(const skgpu::VulkanInterface* iface, VkPhysicalDevice physDev);
 
     void applyDriverCorrectnessWorkarounds(const VkPhysicalDeviceProperties&);
 
     bool onSurfaceSupportsWritePixels(const GrSurface*) const override;
-    bool onCanCopySurface(const GrSurfaceProxy* dst, const GrSurfaceProxy* src,
-                          const SkIRect& srcRect, const SkIPoint& dstPoint) const override;
+    bool onCanCopySurface(const GrSurfaceProxy* dst, const SkIRect& dstRect,
+                          const GrSurfaceProxy* src, const SkIRect& srcRect) const override;
     GrBackendFormat onGetDefaultBackendFormat(GrColorType) const override;
 
     bool onAreColorTypeAndFormatCompatible(GrColorType, const GrBackendFormat&) const override;
@@ -376,11 +423,17 @@ private:
             return 0;
         }
 
-        void init(const GrVkInterface*, VkPhysicalDevice, const VkPhysicalDeviceProperties&,
+        void init(const GrContextOptions&,
+                  const skgpu::VulkanInterface*,
+                  VkPhysicalDevice,
+                  const VkPhysicalDeviceProperties&,
                   VkFormat);
         static void InitFormatFlags(VkFormatFeatureFlags, uint16_t* flags);
-        void initSampleCounts(const GrVkInterface*, VkPhysicalDevice,
-                              const VkPhysicalDeviceProperties&, VkFormat);
+        void initSampleCounts(const GrContextOptions&,
+                              const skgpu::VulkanInterface*,
+                              VkPhysicalDevice,
+                              const VkPhysicalDeviceProperties&,
+                              VkFormat);
 
         enum {
             kTexturable_Flag = 0x1,
@@ -397,7 +450,7 @@ private:
         std::unique_ptr<ColorTypeInfo[]> fColorTypeInfos;
         int fColorTypeInfoCount = 0;
     };
-    static const size_t kNumVkFormats = 22;
+    static const size_t kNumVkFormats = 25;
     FormatInfo fFormatTable[kNumVkFormats];
 
     FormatInfo& getFormatInfo(VkFormat);
@@ -408,7 +461,7 @@ private:
 
     VkFormat fPreferredStencilFormat;
 
-    SkSTArray<1, GrVkYcbcrConversionInfo> fYcbcrInfos;
+    skia_private::STArray<1, skgpu::VulkanYcbcrConversionInfo> fYcbcrInfos;
 
     bool fMustSyncCommandBuffersWithQueue = false;
     bool fShouldAlwaysUseDedicatedImageMemory = false;
@@ -430,14 +483,15 @@ private:
 
     bool fSupportsYcbcrConversion = false;
 
-    bool fSupportsProtectedMemory = false;
-
     bool fSupportsDRMFormatModifiers = false;
+
+    bool fSupportsDeviceFaultInfo = false;
+
+    bool fSupportsFrameBoundary = false;
 
     bool fPreferPrimaryOverSecondaryCommandBuffers = true;
     bool fMustInvalidatePrimaryCmdBufferStateAfterClearAttachments = false;
 
-    bool fMustUseCoherentHostVisibleMemory = false;
     bool fGpuOnlyBuffersMorePerformant = false;
     bool fShouldPersistentlyMapCpuToGpuBuffers = true;
 

@@ -7,40 +7,50 @@
 
 #include "src/gpu/ganesh/GrPersistentCacheUtils.h"
 
-#include "include/private/SkSLString.h"
+#include "include/private/base/SkTo.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
 #include "src/core/SkReadBuffer.h"
 #include "src/core/SkWriteBuffer.h"
+#include "src/sksl/SkSLProgramSettings.h"
+
+#include <algorithm>
+#include <cstddef>
 
 namespace GrPersistentCacheUtils {
 
-static constexpr int kCurrentVersion = 9;
+static constexpr int kCurrentVersion = 12;
 
 int GetCurrentVersion() {
-    // The persistent cache stores a copy of the SkSL::Program::Inputs struct. If you alter the
-    // Program::Inputs struct in any way, you must increment kCurrentVersion to invalidate the
-    // outdated persistent cache files. The KnownSkSLProgramInputs struct must also be updated to
-    // match the new contents of Program::Inputs.
-    struct KnownSkSLProgramInputs { bool useRTFlipUniform; };
-    static_assert(sizeof(SkSL::Program::Inputs) == sizeof(KnownSkSLProgramInputs));
+    // The persistent cache stores a copy of the SkSL::Program::Interface struct. If you alter the
+    // Program::Interface struct in any way, you must increment kCurrentVersion to invalidate the
+    // outdated persistent cache files. The KnownSkSLProgramInterface struct must also be updated
+    // to match the new contents of Program::Interface.
+    struct KnownSkSLProgramInterface {
+        bool useLastFragColor;
+        bool useRTFlipUniform;
+        bool outputSecondaryColor;
+    };
+    static_assert(sizeof(SkSL::Program::Interface) == sizeof(KnownSkSLProgramInterface));
 
     return kCurrentVersion;
 }
 
 sk_sp<SkData> PackCachedShaders(SkFourByteTag shaderType,
                                 const std::string shaders[],
-                                const SkSL::Program::Inputs inputs[],
-                                int numInputs,
+                                const SkSL::Program::Interface interfaces[],
+                                int numInterfaces,
                                 const ShaderMetadata* meta) {
     // For consistency (so tools can blindly pack and unpack cached shaders), we always write
-    // kGrShaderTypeCount inputs. If the backend gives us fewer, we just replicate the last one.
-    SkASSERT(numInputs >= 1 && numInputs <= kGrShaderTypeCount);
+    // kGrShaderTypeCount interfaces. If the backend gives us fewer, we just replicate the last one.
+    SkASSERT(numInterfaces >= 1 && numInterfaces <= kGrShaderTypeCount);
 
-    SkBinaryWriteBuffer writer;
+    SkBinaryWriteBuffer writer({});
     writer.writeInt(kCurrentVersion);
     writer.writeUInt(shaderType);
     for (int i = 0; i < kGrShaderTypeCount; ++i) {
         writer.writeByteArray(shaders[i].c_str(), shaders[i].size());
-        writer.writePad32(&inputs[std::min(i, numInputs - 1)], sizeof(SkSL::Program::Inputs));
+        writer.writePad32(&interfaces[std::min(i, numInterfaces - 1)],
+                          sizeof(SkSL::Program::Interface));
     }
     writer.writeBool(SkToBool(meta));
     if (meta) {
@@ -49,15 +59,14 @@ sk_sp<SkData> PackCachedShaders(SkFourByteTag shaderType,
             writer.writeBool(meta->fSettings->fForceNoRTFlip);
             writer.writeBool(meta->fSettings->fFragColorIsInOut);
             writer.writeBool(meta->fSettings->fForceHighPrecision);
-            writer.writeBool(meta->fSettings->fUsePushConstants);
+            writer.writeBool(meta->fSettings->fUseVulkanPushConstantsForGaneshRTAdjust);
         }
 
-        writer.writeInt(meta->fAttributeNames.count());
+        writer.writeInt(meta->fAttributeNames.size());
         for (const auto& attr : meta->fAttributeNames) {
             writer.writeByteArray(attr.c_str(), attr.size());
         }
 
-        writer.writeBool(meta->fHasCustomColorOutput);
         writer.writeBool(meta->fHasSecondaryColorOutput);
 
         if (meta->fPlatformData) {
@@ -76,8 +85,8 @@ SkFourByteTag GetType(SkReadBuffer* reader) {
 
 bool UnpackCachedShaders(SkReadBuffer* reader,
                          std::string shaders[],
-                         SkSL::Program::Inputs inputs[],
-                         int numInputs,
+                         SkSL::Program::Interface interfaces[],
+                         int numInterfaces,
                          ShaderMetadata* meta) {
     for (int i = 0; i < kGrShaderTypeCount; ++i) {
         size_t shaderLen = 0;
@@ -86,21 +95,21 @@ bool UnpackCachedShaders(SkReadBuffer* reader,
             shaders[i].assign(shaderBuf, shaderLen);
         }
 
-        // GL, for example, only wants one set of Inputs
-        if (i < numInputs) {
-            reader->readPad32(&inputs[i], sizeof(inputs[i]));
+        // GL, for example, only wants one Interface
+        if (i < numInterfaces) {
+            reader->readPad32(&interfaces[i], sizeof(interfaces[i]));
         } else {
-            reader->skip(sizeof(SkSL::Program::Inputs));
+            reader->skip(sizeof(SkSL::Program::Interface));
         }
     }
     if (reader->readBool() && meta) {
         SkASSERT(meta->fSettings != nullptr);
 
         if (reader->readBool()) {
-            meta->fSettings->fForceNoRTFlip      = reader->readBool();
-            meta->fSettings->fFragColorIsInOut   = reader->readBool();
-            meta->fSettings->fForceHighPrecision = reader->readBool();
-            meta->fSettings->fUsePushConstants   = reader->readBool();
+            meta->fSettings->fForceNoRTFlip                             = reader->readBool();
+            meta->fSettings->fFragColorIsInOut                          = reader->readBool();
+            meta->fSettings->fForceHighPrecision                        = reader->readBool();
+            meta->fSettings->fUseVulkanPushConstantsForGaneshRTAdjust   = reader->readBool();
         }
 
         meta->fAttributeNames.resize(reader->readInt());
@@ -112,7 +121,6 @@ bool UnpackCachedShaders(SkReadBuffer* reader,
             }
         }
 
-        meta->fHasCustomColorOutput    = reader->readBool();
         meta->fHasSecondaryColorOutput = reader->readBool();
 
         // a given platform will be responsible for reading its data

@@ -1,63 +1,38 @@
-# This target should be run when new files are added or includes changed.
-generate:
-	bazelisk build @org_skia_go_infra//bazel/gazelle:gazelle_cpp
-	cd .. && bazel-bin/external/org_skia_go_infra/bazel/gazelle/gazelle_cpp_/gazelle_cpp update \
-		--third_party_file_map="third_party/file_map_for_bazel.json" \
-		include src tools gm tests \
-		modules/skshaper modules/svg modules/skresources modules/skparagraph modules/skunicode \
-		modules/skottie modules/skresources modules/sksg experimental/ffmpeg \
-		modules/particles \
-		experimental/bazel_test example \
-		modules/canvaskit/go \
-		infra/bots/task_drivers
+EXPORTER_TOOL=bazel-bin/bazel/exporter_tool/exporter_tool_/exporter_tool
+EXPORTER_RULES=-rule='//src/...' -rule='//modules/...' -rule='//include/...' -rule='//resources/...' -rule='//experimental/rust_png/...'
+
+generate_go:
+	cd .. && bazelisk run //infra:gazelle -- update infra/bots/task_drivers modules/canvaskit/go \
+       bazel/device_specific_configs bazel/exporter bazel/deps_parser tools/gpu/gl/interface \
+			 tools/testrunners/common/make_tarball tools/testrunners/common/android/adb_test_runner
+
+.PHONY: generate_cmake
+generate_cmake:
+	cd .. && bazelisk build //bazel/exporter_tool && ${EXPORTER_TOOL} \
+		-output_format=cmake -proj_name=Skia -rule='//:core'
+
+.PHONY: generate_gni
+generate_gni:
+	# It is tempting to try to put this into a blaze run command. However, that
+	# is currently infeasible due to the fact that the exporter tool *calls*
+	# Bazel, resulting in a deadlock because only one Bazel command can run
+	# at a time.
+	cd .. && bazelisk build //bazel/exporter_tool --config=no_sandbox && \
+        ${EXPORTER_TOOL} -output_format=gni -proj_name=Skia ${EXPORTER_RULES} \
+		&& bazelisk run //bazel/external/gn -- format gn/*.gni modules/*/*.gni
+
+.PHONY: generate_gni_rbe
+generate_gni_rbe:
+	cd .. && bazelisk build //bazel/exporter_tool --config=linux_rbe --jobs=100 \
+ 		--platforms=@io_bazel_rules_go//go/toolchain:$(shell bazelisk run //bazel/utils:go_platform) \
+ 		--remote_download_toplevel && \
+        ${EXPORTER_TOOL} -output_format=gni -proj_name=Skia ${EXPORTER_RULES} \
+		&& bazelisk run //bazel/external/gn -- format gn/*.gni modules/*/*.gni
+
+.PHONY: mocks
+mocks:
+	go generate ./...
 
 # This target should be run after the go.mod file is updated (e.g. version rolls or new updates)
 gazelle_update_repo:
-	cd .. && bazelisk run //:gazelle -- update-repos -from_file=go.mod -to_macro=go_repositories.bzl%go_repositories
-
-# Run this target to test all known working Bazel builds
-known_good_builds:
-	bazelisk build //experimental/bazel_test/... --config=clang
-	bazelisk run //experimental/bazel_test:bazel_test_exe --config=clang
-	bazelisk build //:skia_core --config=clang
-	bazelisk build //src/sksl/lex:sksllex --config=clang
-	bazelisk build //tools/skdiff --config=clang
-	bazelisk build //tools/skslc --config=clang
-	bazelisk build //modules/canvaskit:canvaskit_wasm --compilation_mode opt --sandbox_base=/dev/shm
-
-	# Test the enforcement of include what you use
-	bazelisk build //example:hello_world_gl --config=clang --features skia_enforce_iwyu
- 	# Both with and without a GPU backend should be error free (i.e. IWYU should let us
- 	# conditionally import things.
-	bazelisk build //src/svg/... --config=clang --features skia_enforce_iwyu \
-		--gpu_backend=gl_backend --include_decoder=jpeg_decode_codec
-	bazelisk build //src/svg/... --config=clang --features skia_enforce_iwyu
-	bazelisk build //tools/debugger --config=clang --gpu_backend=gl_backend \
-		--features skia_enforce_iwyu
-	bazelisk build //:skia_core --config=clang --features skia_enforce_iwyu
-	bazelisk build //src/utils/... --config=clang --features skia_enforce_iwyu
-	bazelisk build //src/utils/... --config=clang --gpu_backend=gl_backend \
-		--features skia_enforce_iwyu
-
-rbe_known_good_builds:
-	bazelisk build //experimental/bazel_test/... --config=linux-rbe
-	bazelisk run //experimental/bazel_test:bazel_test_exe --config=linux-rbe
-	bazelisk build //:skia_core --config=linux-rbe
-	bazelisk build //src/sksl/lex:sksllex --config=linux-rbe
-	bazelisk build //tools/skdiff --config=linux-rbe
-	bazelisk build //tools/skslc --config=linux-rbe
-	# TODO(kjlubick) CanvasKit in release mode (i.e. with Closure) requires
-	# https://github.com/emscripten-core/emscripten/pull/16640 to land
-	bazelisk build //modules/canvaskit:canvaskit_wasm --compilation_mode dbg --config=linux-rbe \
-		--jobs 100
-
-	# Test the enforcement of include what you use
-	bazelisk build //example:hello_world_gl --config=linux-rbe --features skia_enforce_iwyu
- 	# Both with and without a GPU backend should be error free (i.e. IWYU should let us
- 	# conditionally import things.
-	bazelisk build //src/svg/... --config=linux-rbe --features skia_enforce_iwyu \
-		--gpu_backend=gl_backend --include_decoder=jpeg_decode_codec
-	bazelisk build //src/svg/... --config=linux-rbe --features skia_enforce_iwyu
-	bazelisk build //tools/debugger --config=linux-rbe --gpu_backend=gl_backend \
-		--features skia_enforce_iwyu
-	bazelisk build //:skia_core --config=linux-rbe --features skia_enforce_iwyu
+	cd .. && bazelisk run //infra:gazelle -- update-repos -from_file=go.mod -to_macro=go_repositories.bzl%go_repositories -prune

@@ -22,16 +22,18 @@
 #include "src/gpu/ganesh/effects/GrTextureEffect.h"
 
 #ifdef SK_DEBUG
-#include "include/gpu/GrDirectContext.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
 #include "src/gpu/ganesh/GrDirectContextPriv.h"
 #endif
+
+using namespace skia_private;
 
 GrD3DOpsRenderPass::GrD3DOpsRenderPass(GrD3DGpu* gpu) : fGpu(gpu) {}
 
 bool GrD3DOpsRenderPass::set(GrRenderTarget* rt, GrSurfaceOrigin origin, const SkIRect& bounds,
                              const GrOpsRenderPass::LoadAndStoreInfo& colorInfo,
                              const GrOpsRenderPass::StencilLoadAndStoreInfo& stencilInfo,
-                             const SkTArray<GrSurfaceProxy*, true>& sampledProxies) {
+                             const TArray<GrSurfaceProxy*, true>& sampledProxies) {
     SkASSERT(!fRenderTarget);
     SkASSERT(fGpu == rt->getContext()->priv().getGpu());
 
@@ -94,7 +96,7 @@ void set_stencil_ref(GrD3DGpu* gpu, const GrProgramInfo& info) {
 void set_blend_factor(GrD3DGpu* gpu, const GrProgramInfo& info) {
     const GrXferProcessor& xferProcessor = info.pipeline().getXferProcessor();
     const skgpu::Swizzle& swizzle = info.pipeline().writeSwizzle();
-    const GrXferProcessor::BlendInfo& blendInfo = xferProcessor.getBlendInfo();
+    const skgpu::BlendInfo& blendInfo = xferProcessor.getBlendInfo();
     skgpu::BlendCoeff srcCoeff = blendInfo.fSrcBlend;
     skgpu::BlendCoeff dstCoeff = blendInfo.fDstBlend;
     float floatColors[4];
@@ -129,8 +131,6 @@ void set_primitive_topology(GrD3DGpu* gpu, const GrProgramInfo& info) {
         case GrPrimitiveType::kLineStrip:
             topology = D3D_PRIMITIVE_TOPOLOGY_LINESTRIP;
             break;
-        case GrPrimitiveType::kPatches: // Unsupported
-        case GrPrimitiveType::kPath: // Unsupported
         default:
             SkUNREACHABLE;
     }

@@ -10,7 +10,7 @@
 
 #include "src/gpu/ganesh/GrRenderTarget.h"
 
-#include "include/gpu/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
 #include "src/gpu/ganesh/GrGpu.h"
 #include "src/gpu/ganesh/mtl/GrMtlAttachment.h"
 #include "src/gpu/ganesh/mtl/GrMtlFramebuffer.h"
@@ -71,6 +71,8 @@ protected:
 
     // This returns zero since the memory should all be handled by the attachments
     size_t onGpuMemorySize() const override { return 0; }
+
+    void onSetLabel() override;
 
     sk_sp<GrMtlAttachment> fColorAttachment;
     sk_sp<GrMtlAttachment> fResolveAttachment;

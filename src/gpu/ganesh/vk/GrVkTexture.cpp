@@ -5,23 +5,29 @@
  * found in the LICENSE file.
  */
 
-
 #include "src/gpu/ganesh/vk/GrVkTexture.h"
 
+#include "include/core/SkSize.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/MutableTextureState.h"
+#include "include/gpu/ganesh/vk/GrVkTypes.h"
+#include "include/gpu/vk/VulkanTypes.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkTo.h"
+#include "src/gpu/ganesh/GrAttachment.h"
+#include "src/gpu/ganesh/GrSurface.h"
 #include "src/gpu/ganesh/GrTexture.h"
+#include "src/gpu/ganesh/vk/GrVkBackendSurfacePriv.h"
 #include "src/gpu/ganesh/vk/GrVkDescriptorSet.h"
 #include "src/gpu/ganesh/vk/GrVkGpu.h"
-#include "src/gpu/ganesh/vk/GrVkImageView.h"
-#include "src/gpu/ganesh/vk/GrVkTextureRenderTarget.h"
 #include "src/gpu/ganesh/vk/GrVkUtil.h"
-
-#include "include/gpu/vk/GrVkTypes.h"
+#include "src/gpu/vk/VulkanUtilsPriv.h"
 
 #define VK_CALL(GPU, X) GR_VK_CALL(GPU->vkInterface(), X)
 
 // Because this class is virtually derived from GrSurface we must explicitly call its constructor.
 GrVkTexture::GrVkTexture(GrVkGpu* gpu,
-                         SkBudgeted budgeted,
+                         skgpu::Budgeted budgeted,
                          SkISize dimensions,
                          sk_sp<GrVkImage> texture,
                          GrMipmapStatus mipmapStatus,
@@ -44,7 +50,7 @@ GrVkTexture::GrVkTexture(GrVkGpu* gpu,
              !fTexture->ycbcrConversionInfo().fExternalFormat);
     SkASSERT(SkToBool(fTexture->vkUsageFlags() & VK_IMAGE_USAGE_SAMPLED_BIT));
     this->registerWithCache(budgeted);
-    if (GrVkFormatIsCompressed(fTexture->imageFormat())) {
+    if (skgpu::VkFormatIsCompressed(fTexture->imageFormat())) {
         this->setReadOnly();
     }
 }
@@ -102,11 +108,14 @@ GrVkTexture::GrVkTexture(GrVkGpu* gpu,
     SkASSERT(SkToBool(fTexture->vkUsageFlags() & VK_IMAGE_USAGE_SAMPLED_BIT));
 }
 
-sk_sp<GrVkTexture> GrVkTexture::MakeNewTexture(GrVkGpu* gpu, SkBudgeted budgeted,
+sk_sp<GrVkTexture> GrVkTexture::MakeNewTexture(GrVkGpu* gpu,
+                                               skgpu::Budgeted budgeted,
                                                SkISize dimensions,
-                                               VkFormat format, uint32_t mipLevels,
+                                               VkFormat format,
+                                               uint32_t mipLevels,
                                                GrProtected isProtected,
-                                               GrMipmapStatus mipmapStatus) {
+                                               GrMipmapStatus mipmapStatus,
+                                               std::string_view label) {
     sk_sp<GrVkImage> texture = GrVkImage::MakeTexture(
             gpu, dimensions, format, mipLevels, GrRenderable::kNo, /*numSamples=*/1, budgeted,
             isProtected);
@@ -115,13 +124,13 @@ sk_sp<GrVkTexture> GrVkTexture::MakeNewTexture(GrVkGpu* gpu, SkBudgeted budgeted
         return nullptr;
     }
     return sk_sp<GrVkTexture>(new GrVkTexture(
-            gpu, budgeted, dimensions, std::move(texture), mipmapStatus, /*label=*/{}));
+            gpu, budgeted, dimensions, std::move(texture), mipmapStatus, label));
 }
 
 sk_sp<GrVkTexture> GrVkTexture::MakeWrappedTexture(
         GrVkGpu* gpu, SkISize dimensions, GrWrapOwnership wrapOwnership, GrWrapCacheable cacheable,
         GrIOType ioType, const GrVkImageInfo& info,
-        sk_sp<GrBackendSurfaceMutableStateImpl> mutableState) {
+        sk_sp<skgpu::MutableTextureState> mutableState) {
     // Adopted textures require both image and allocation because we're responsible for freeing
     SkASSERT(VK_NULL_HANDLE != info.fImage &&
              (kBorrow_GrWrapOwnership == wrapOwnership || VK_NULL_HANDLE != info.fAlloc.fMemory));
@@ -132,7 +141,8 @@ sk_sp<GrVkTexture> GrVkTexture::MakeWrappedTexture(
                                                       std::move(mutableState),
                                                       GrAttachment::UsageFlags::kTexture,
                                                       wrapOwnership,
-                                                      cacheable);
+                                                      cacheable,
+                                                      "VkImage_MakeWrappedTexture");
     if (!texture) {
         return nullptr;
     }
@@ -150,7 +160,7 @@ sk_sp<GrVkTexture> GrVkTexture::MakeWrappedTexture(
                                               cacheable,
                                               ioType,
                                               isExternal,
-                                              /*label=*/{}));
+                                              /*label=*/"Vk_MakeWrappedTexture"));
 }
 
 GrVkTexture::~GrVkTexture() {
@@ -188,8 +198,10 @@ void GrVkTexture::onAbandon() {
 }
 
 GrBackendTexture GrVkTexture::getBackendTexture() const {
-    return GrBackendTexture(fTexture->width(), fTexture->height(), fTexture->vkImageInfo(),
-                            fTexture->getMutableState());
+    return GrBackendTextures::MakeVk(fTexture->width(),
+                                     fTexture->height(),
+                                     fTexture->vkImageInfo(),
+                                     fTexture->getMutableState());
 }
 
 GrVkGpu* GrVkTexture::getVkGpu() const {

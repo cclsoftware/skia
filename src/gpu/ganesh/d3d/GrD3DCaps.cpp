@@ -4,20 +4,22 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
+#include "src/gpu/ganesh/d3d/GrD3DCaps.h"
 
-#include "include/gpu/GrBackendSurface.h"
-#include "include/gpu/GrContextOptions.h"
-#include "include/gpu/d3d/GrD3DBackendContext.h"
-#include "include/gpu/d3d/GrD3DTypes.h"
-
+#include "include/core/SkTextureCompressionType.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrContextOptions.h"
+#include "include/gpu/ganesh/d3d/GrD3DBackendContext.h"
+#include "include/gpu/ganesh/d3d/GrD3DTypes.h"
 #include "src/core/SkCompressedDataUtils.h"
 #include "src/gpu/KeyBuilder.h"
 #include "src/gpu/ganesh/GrBackendUtils.h"
 #include "src/gpu/ganesh/GrProgramDesc.h"
 #include "src/gpu/ganesh/GrProgramInfo.h"
+#include "src/gpu/ganesh/GrRenderTargetProxy.h"
 #include "src/gpu/ganesh/GrShaderCaps.h"
 #include "src/gpu/ganesh/GrStencilSettings.h"
-#include "src/gpu/ganesh/d3d/GrD3DCaps.h"
+#include "src/gpu/ganesh/TestFormatColorTypeCombination.h"
 #include "src/gpu/ganesh/d3d/GrD3DGpu.h"
 #include "src/gpu/ganesh/d3d/GrD3DRenderTarget.h"
 #include "src/gpu/ganesh/d3d/GrD3DTexture.h"
@@ -39,7 +41,8 @@ GrD3DCaps::GrD3DCaps(const GrContextOptions& contextOptions, IDXGIAdapter1* adap
     fNativeDrawIndirectSupport = true;
 
     fSemaphoreSupport = true;
-    fFenceSyncSupport = true;
+    fBackendSemaphoreSupport = true;
+    fFinishedProcAsyncCallbackSupport = true;
     // TODO: implement these
     fCrossContextTextureSupport = false;
     fHalfFloatVertexAttributeSupport = false;
@@ -51,11 +54,12 @@ GrD3DCaps::GrD3DCaps(const GrContextOptions& contextOptions, IDXGIAdapter1* adap
 
     fTransferFromBufferToTextureSupport = true;
     fTransferFromSurfaceToBufferSupport = true;
+    fTransferFromBufferToBufferSupport  = true;
 
     fMaxRenderTargetSize = 16384;  // minimum required by feature level 11_0
     fMaxTextureSize = 16384;       // minimum required by feature level 11_0
 
-    fTransferBufferAlignment = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
+    fTransferBufferRowBytesAlignment = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
 
     // TODO: implement
     fDynamicStateArrayGeometryProcessorTextureSupport = false;
@@ -98,8 +102,12 @@ bool GrD3DCaps::canCopyAsResolve(DXGI_FORMAT dstFormat, int dstSampleCnt,
     return true;
 }
 
-bool GrD3DCaps::onCanCopySurface(const GrSurfaceProxy* dst, const GrSurfaceProxy* src,
-                                 const SkIRect& srcRect, const SkIPoint& dstPoint) const {
+bool GrD3DCaps::onCanCopySurface(const GrSurfaceProxy* dst, const SkIRect& dstRect,
+                                 const GrSurfaceProxy* src, const SkIRect& srcRect) const {
+    // D3D12 does not support scaling copies
+    if (srcRect.size() != dstRect.size()) {
+        return false;
+    }
     if (src->isProtected() == GrProtected::kYes && dst->isProtected() != GrProtected::kYes) {
         return false;
     }
@@ -202,9 +210,6 @@ void GrD3DCaps::initGrCaps(const D3D12_FEATURE_DATA_D3D12_OPTIONS& optionsDesc,
     fMaxTextureSize = 16384;
     // There's no specific cap for RT size, so use texture size
     fMaxRenderTargetSize = fMaxTextureSize;
-    if (fDriverBugWorkarounds.max_texture_size_limit_4096) {
-        fMaxTextureSize = std::min(fMaxTextureSize, 4096);
-    }
     // Our render targets are always created with textures as the color
     // attachment, hence this min:
     fMaxRenderTargetSize = fMaxTextureSize;
@@ -238,6 +243,7 @@ void GrD3DCaps::initShaderCaps(int vendorID, const D3D12_FEATURE_DATA_D3D12_OPTI
     shaderCaps->fSampleMaskSupport = true;
 
     shaderCaps->fShaderDerivativeSupport = true;
+    shaderCaps->fExplicitTextureLodSupport = true;
 
     shaderCaps->fDualSourceBlendingSupport = true;
 
@@ -341,9 +347,9 @@ const GrD3DCaps::FormatInfo& GrD3DCaps::getFormatInfo(DXGI_FORMAT format) const 
 }
 
 GrD3DCaps::FormatInfo& GrD3DCaps::getFormatInfo(DXGI_FORMAT format) {
-    static_assert(SK_ARRAY_COUNT(kDxgiFormats) == GrD3DCaps::kNumDxgiFormats,
+    static_assert(std::size(kDxgiFormats) == GrD3DCaps::kNumDxgiFormats,
                   "Size of DXGI_FORMATs array must match static value in header");
-    for (size_t i = 0; i < SK_ARRAY_COUNT(kDxgiFormats); ++i) {
+    for (size_t i = 0; i < std::size(kDxgiFormats); ++i) {
         if (kDxgiFormats[i] == format) {
             return fFormatTable[i];
         }
@@ -353,7 +359,7 @@ GrD3DCaps::FormatInfo& GrD3DCaps::getFormatInfo(DXGI_FORMAT format) {
 }
 
 void GrD3DCaps::initFormatTable(const DXGI_ADAPTER_DESC& adapterDesc, ID3D12Device* device) {
-    static_assert(SK_ARRAY_COUNT(kDxgiFormats) == GrD3DCaps::kNumDxgiFormats,
+    static_assert(std::size(kDxgiFormats) == GrD3DCaps::kNumDxgiFormats,
                   "Size of DXGI_FORMATs array must match static value in header");
 
     std::fill_n(fColorTypeToFormatTable, kGrColorTypeCnt, DXGI_FORMAT_UNKNOWN);
@@ -468,7 +474,7 @@ void GrD3DCaps::initFormatTable(const DXGI_ADAPTER_DESC& adapterDesc, ID3D12Devi
         info.init(adapterDesc, device, format);
         info.fFormatColorType = GrColorType::kRGBA_F16;
         if (SkToBool(info.fFlags & FormatInfo::kTexturable_Flag)) {
-            info.fColorTypeInfoCount = 2;
+            info.fColorTypeInfoCount = 3;
             info.fColorTypeInfos.reset(new ColorTypeInfo[info.fColorTypeInfoCount]());
             int ctIdx = 0;
             // Format: DXGI_FORMAT_R16G16B16A16_FLOAT, Surface: GrColorType::kRGBA_F16
@@ -484,6 +490,14 @@ void GrD3DCaps::initFormatTable(const DXGI_ADAPTER_DESC& adapterDesc, ID3D12Devi
                 auto& ctInfo = info.fColorTypeInfos[ctIdx++];
                 ctInfo.fColorType = ct;
                 ctInfo.fFlags = ColorTypeInfo::kUploadData_Flag | ColorTypeInfo::kRenderable_Flag;
+            }
+            // Format: DXGI_FORMAT_R16G16B16A16_FLOAT, Surface: GrColorType::kRGB_F16F16F16x
+            {
+                constexpr GrColorType ct = GrColorType::kRGB_F16F16F16x;
+                auto& ctInfo = info.fColorTypeInfos[ctIdx++];
+                ctInfo.fColorType = ct;
+                ctInfo.fFlags = ColorTypeInfo::kUploadData_Flag;
+                ctInfo.fReadSwizzle = skgpu::Swizzle("rgb1");
             }
         }
     }
@@ -534,7 +548,7 @@ void GrD3DCaps::initFormatTable(const DXGI_ADAPTER_DESC& adapterDesc, ID3D12Devi
         info.init(adapterDesc, device, format);
         info.fFormatColorType = GrColorType::kRGBA_1010102;
         if (SkToBool(info.fFlags & FormatInfo::kTexturable_Flag)) {
-            info.fColorTypeInfoCount = 1;
+            info.fColorTypeInfoCount = 2;
             info.fColorTypeInfos.reset(new ColorTypeInfo[info.fColorTypeInfoCount]());
             int ctIdx = 0;
             // Format: DXGI_FORMAT_R10G10B10A2_UNORM, Surface: kRGBA_1010102
@@ -543,6 +557,14 @@ void GrD3DCaps::initFormatTable(const DXGI_ADAPTER_DESC& adapterDesc, ID3D12Devi
                 auto& ctInfo = info.fColorTypeInfos[ctIdx++];
                 ctInfo.fColorType = ct;
                 ctInfo.fFlags = ColorTypeInfo::kUploadData_Flag | ColorTypeInfo::kRenderable_Flag;
+            }
+            // Format: DXGI_FORMAT_R10G10B10A2_UNORM, Surface: kRGB_101010x
+            {
+                constexpr GrColorType ct = GrColorType::kRGB_101010x;
+                auto& ctInfo = info.fColorTypeInfos[ctIdx++];
+                ctInfo.fColorType = ct;
+                ctInfo.fFlags = ColorTypeInfo::kUploadData_Flag;
+                ctInfo.fReadSwizzle = skgpu::Swizzle("rgb1");
             }
         }
     }
@@ -687,10 +709,12 @@ void GrD3DCaps::initFormatTable(const DXGI_ADAPTER_DESC& adapterDesc, ID3D12Devi
     this->setColorType(GrColorType::kRG_88, { DXGI_FORMAT_R8G8_UNORM });
     this->setColorType(GrColorType::kBGRA_8888, { DXGI_FORMAT_B8G8R8A8_UNORM });
     this->setColorType(GrColorType::kRGBA_1010102, { DXGI_FORMAT_R10G10B10A2_UNORM });
+    this->setColorType(GrColorType::kRGB_101010x, { DXGI_FORMAT_R10G10B10A2_UNORM });
     this->setColorType(GrColorType::kGray_8, { DXGI_FORMAT_R8_UNORM });
     this->setColorType(GrColorType::kAlpha_F16, { DXGI_FORMAT_R16_FLOAT });
     this->setColorType(GrColorType::kRGBA_F16, { DXGI_FORMAT_R16G16B16A16_FLOAT });
     this->setColorType(GrColorType::kRGBA_F16_Clamped, { DXGI_FORMAT_R16G16B16A16_FLOAT });
+    this->setColorType(GrColorType::kRGB_F16F16F16x, { DXGI_FORMAT_R16G16B16A16_FLOAT });
     this->setColorType(GrColorType::kAlpha_16, { DXGI_FORMAT_R16_UNORM });
     this->setColorType(GrColorType::kRG_1616, { DXGI_FORMAT_R16G16_UNORM });
     this->setColorType(GrColorType::kRGBA_16161616, { DXGI_FORMAT_R16G16B16A16_UNORM });
@@ -853,14 +877,14 @@ int GrD3DCaps::getRenderTargetSampleCount(int requestedCount, DXGI_FORMAT format
 
     const FormatInfo& info = this->getFormatInfo(format);
 
-    int count = info.fColorSampleCounts.count();
+    int count = info.fColorSampleCounts.size();
 
     if (!count) {
         return 0;
     }
 
     if (1 == requestedCount) {
-        SkASSERT(info.fColorSampleCounts.count() && info.fColorSampleCounts[0] == 1);
+        SkASSERT(info.fColorSampleCounts.size() && info.fColorSampleCounts[0] == 1);
         return 1;
     }
 
@@ -884,10 +908,10 @@ int GrD3DCaps::maxRenderTargetSampleCount(DXGI_FORMAT format) const {
     const FormatInfo& info = this->getFormatInfo(format);
 
     const auto& table = info.fColorSampleCounts;
-    if (!table.count()) {
+    if (!table.size()) {
         return 0;
     }
-    return table[table.count() - 1];
+    return table[table.size() - 1];
 }
 
 GrColorType GrD3DCaps::getFormatColorType(DXGI_FORMAT format) const {
@@ -969,9 +993,9 @@ GrBackendFormat GrD3DCaps::onGetDefaultBackendFormat(GrColorType ct) const {
 }
 
 GrBackendFormat GrD3DCaps::getBackendFormatFromCompressionType(
-    SkImage::CompressionType compressionType) const {
+    SkTextureCompressionType compressionType) const {
     switch (compressionType) {
-        case SkImage::CompressionType::kBC1_RGBA8_UNORM:
+        case SkTextureCompressionType::kBC1_RGBA8_UNORM:
             if (this->isFormatTexturable(DXGI_FORMAT_BC1_UNORM)) {
                 return GrBackendFormat::MakeDxgi(DXGI_FORMAT_BC1_UNORM);
             }
@@ -1030,9 +1054,9 @@ GrCaps::SupportedRead GrD3DCaps::onSupportedReadPixelsColorType(
         return { GrColorType::kUnknown, 0 };
     }
 
-    SkImage::CompressionType compression = GrBackendFormatToCompressionType(srcBackendFormat);
-    if (compression != SkImage::CompressionType::kNone) {
-        return { SkCompressionTypeIsOpaque(compression) ? GrColorType::kRGB_888x
+    SkTextureCompressionType compression = GrBackendFormatToCompressionType(srcBackendFormat);
+    if (compression != SkTextureCompressionType::kNone) {
+        return { SkTextureCompressionTypeIsOpaque(compression) ? GrColorType::kRGB_888x
                                                         : GrColorType::kRGBA_8888, 0 };
     }
 
@@ -1083,9 +1107,9 @@ GrProgramDesc GrD3DCaps::makeDesc(GrRenderTarget* rt,
     return desc;
 }
 
-#if GR_TEST_UTILS
-std::vector<GrCaps::TestFormatColorTypeCombination> GrD3DCaps::getTestingCombinations() const {
-    std::vector<GrCaps::TestFormatColorTypeCombination> combos = {
+#if defined(GPU_TEST_UTILS)
+std::vector<GrTest::TestFormatColorTypeCombination> GrD3DCaps::getTestingCombinations() const {
+    std::vector<GrTest::TestFormatColorTypeCombination> combos = {
         {GrColorType::kAlpha_8,        GrBackendFormat::MakeDxgi(DXGI_FORMAT_R8_UNORM)           },
         {GrColorType::kBGR_565,        GrBackendFormat::MakeDxgi(DXGI_FORMAT_B5G6R5_UNORM)       },
         {GrColorType::kABGR_4444,      GrBackendFormat::MakeDxgi(DXGI_FORMAT_B4G4R4A4_UNORM)     },
@@ -1095,10 +1119,12 @@ std::vector<GrCaps::TestFormatColorTypeCombination> GrD3DCaps::getTestingCombina
         {GrColorType::kRG_88,          GrBackendFormat::MakeDxgi(DXGI_FORMAT_R8G8_UNORM)         },
         {GrColorType::kBGRA_8888,      GrBackendFormat::MakeDxgi(DXGI_FORMAT_B8G8R8A8_UNORM)     },
         {GrColorType::kRGBA_1010102,   GrBackendFormat::MakeDxgi(DXGI_FORMAT_R10G10B10A2_UNORM)  },
+        {GrColorType::kRGB_101010x,    GrBackendFormat::MakeDxgi(DXGI_FORMAT_R10G10B10A2_UNORM)  },
         {GrColorType::kGray_8,         GrBackendFormat::MakeDxgi(DXGI_FORMAT_R8_UNORM)           },
         {GrColorType::kAlpha_F16,      GrBackendFormat::MakeDxgi(DXGI_FORMAT_R16_FLOAT)          },
         {GrColorType::kRGBA_F16,       GrBackendFormat::MakeDxgi(DXGI_FORMAT_R16G16B16A16_FLOAT) },
         {GrColorType::kRGBA_F16_Clamped, GrBackendFormat::MakeDxgi(DXGI_FORMAT_R16G16B16A16_FLOAT)},
+        {GrColorType::kRGB_F16F16F16x, GrBackendFormat::MakeDxgi(DXGI_FORMAT_R16G16B16A16_FLOAT) },
         {GrColorType::kAlpha_16,       GrBackendFormat::MakeDxgi(DXGI_FORMAT_R16_UNORM)          },
         {GrColorType::kRG_1616,        GrBackendFormat::MakeDxgi(DXGI_FORMAT_R16G16_UNORM)       },
         {GrColorType::kRGBA_16161616,  GrBackendFormat::MakeDxgi(DXGI_FORMAT_R16G16B16A16_UNORM) },

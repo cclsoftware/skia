@@ -9,8 +9,8 @@
 #define GrD3DTextureResource_DEFINED
 
 #include "include/core/SkTypes.h"
-#include "include/gpu/GrBackendSurface.h"
-#include "include/gpu/d3d/GrD3DTypes.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/d3d/GrD3DTypes.h"
 #include "include/private/gpu/ganesh/GrTypesPriv.h"
 #include "src/gpu/ganesh/GrManagedResource.h"
 #include "src/gpu/ganesh/d3d/GrD3DResourceState.h"
@@ -73,7 +73,7 @@ public:
             GrD3DGpu* gpu, SkISize dimensions, int sampleCnt, const GrD3DTextureResourceInfo& info,
             SkColor4f clearColor);
 
-    void setResourceRelease(sk_sp<skgpu::RefCntedCallback> releaseHelper);
+    void setResourceRelease(sk_sp<GrSurface::RefCntedReleaseProc> releaseHelper);
 
 protected:
     void releaseResource(GrD3DGpu* gpu);

@@ -8,15 +8,30 @@
 #ifndef GrAtlasManager_DEFINED
 #define GrAtlasManager_DEFINED
 
+#include "include/core/SkRefCnt.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/AtlasTypes.h"
 #include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrDrawOpAtlas.h"
 #include "src/gpu/ganesh/GrOnFlushResourceProvider.h"
 #include "src/gpu/ganesh/GrProxyProvider.h"
 
-class GrGlyph;
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+
+class GrDeferredUploadTarget;
 class GrResourceProvider;
+class GrSurfaceProxyView;
 class SkGlyph;
-class GrTextStrike;
+
+namespace sktext::gpu {
+class Glyph;
+}
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 /** The GrAtlasManager manages the lifetime of and access to GrDrawOpAtlases.
@@ -34,7 +49,7 @@ public:
     ~GrAtlasManager() override;
 
     // if getViews returns nullptr, the client must not try to use other functions on the
-    // GrStrikeCache which use the atlas.  This function *must* be called first, before other
+    // StrikeCache which use the atlas.  This function *must* be called first, before other
     // functions which use the atlas. Note that we can have proxies available but none active
     // (i.e., none instantiated).
     const GrSurfaceProxyView* getViews(skgpu::MaskFormat format, unsigned int* numActiveProxies) {
@@ -49,24 +64,24 @@ public:
 
     void freeAll();
 
-    bool hasGlyph(skgpu::MaskFormat, GrGlyph*);
+    bool hasGlyph(skgpu::MaskFormat, sktext::gpu::Glyph*);
 
     GrDrawOpAtlas::ErrorCode addGlyphToAtlas(const SkGlyph&,
-                                             GrGlyph*,
+                                             sktext::gpu::Glyph*,
                                              int srcPadding,
                                              GrResourceProvider*,
                                              GrDeferredUploadTarget*);
 
     // To ensure the GrDrawOpAtlas does not evict the Glyph Mask from its texture backing store,
-    // the client must pass in the current op token along with the GrGlyph.
-    // A BulkUseTokenUpdater is used to manage bulk last use token updating in the Atlas.
+    // the client must pass in the current op token along with the sktext::gpu::Glyph.
+    // A BulkUsePlotUpdater is used to manage bulk last use token updating in the Atlas.
     // For convenience, this function will also set the use token for the current glyph if required
     // NOTE: the bulk uploader is only valid if the subrun has a valid atlasGeneration
-    void addGlyphToBulkAndSetUseToken(GrDrawOpAtlas::BulkUseTokenUpdater*, skgpu::MaskFormat,
-                                      GrGlyph*, GrDeferredUploadToken);
+    void addGlyphToBulkAndSetUseToken(skgpu::BulkUsePlotUpdater*, skgpu::MaskFormat,
+                                      sktext::gpu::Glyph*, skgpu::AtlasToken);
 
-    void setUseTokenBulk(const GrDrawOpAtlas::BulkUseTokenUpdater& updater,
-                         GrDeferredUploadToken token,
+    void setUseTokenBulk(const skgpu::BulkUsePlotUpdater& updater,
+                         skgpu::AtlasToken token,
                          skgpu::MaskFormat format) {
         this->getAtlas(format)->setLastUseTokenBulk(updater, token);
     }
@@ -85,15 +100,22 @@ public:
 
     // GrOnFlushCallbackObject overrides
 
-    void preFlush(GrOnFlushResourceProvider* onFlushRP, SkSpan<const uint32_t>) override {
+    bool preFlush(GrOnFlushResourceProvider* onFlushRP) override {
+#if defined(GPU_TEST_UTILS)
+        if (onFlushRP->failFlushTimeCallbacks()) {
+            return false;
+        }
+#endif
+
         for (int i = 0; i < skgpu::kMaskFormatCount; ++i) {
             if (fAtlases[i]) {
                 fAtlases[i]->instantiate(onFlushRP);
             }
         }
+        return true;
     }
 
-    void postFlush(GrDeferredUploadToken startTokenForNextFlush, SkSpan<const uint32_t>) override {
+    void postFlush(skgpu::AtlasToken startTokenForNextFlush) override {
         for (int i = 0; i < skgpu::kMaskFormatCount; ++i) {
             if (fAtlases[i]) {
                 fAtlases[i]->compact(startTokenForNextFlush);
@@ -105,20 +127,12 @@ public:
     // OnFlushCallbackObject list
     bool retainOnFreeGpuResources() override { return true; }
 
-    ///////////////////////////////////////////////////////////////////////////
-    // Functions intended debug only
-#ifdef SK_DEBUG
-    void dump(GrDirectContext*) const;
-#endif
-
-    void setAtlasDimensionsToMinimum_ForTesting();
-    void setMaxPages_TestingOnly(uint32_t maxPages);
-
 private:
+    friend class GrAtlasManagerTools;
     bool initAtlas(skgpu::MaskFormat);
     // Change an expected 565 mask format to 8888 if 565 is not supported (will happen when using
     // Metal on macOS). The actual conversion of the data is handled in get_packed_glyph_image() in
-    // GrStrikeCache.cpp
+    // StrikeCache.cpp
     skgpu::MaskFormat resolveMaskFormat(skgpu::MaskFormat format) const {
         if (skgpu::MaskFormat::kA565 == format &&
             !fProxyProvider->caps()->getDefaultBackendFormat(GrColorType::kBGR_565,

@@ -4,23 +4,24 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #ifndef GrOvalOpFactory_DEFINED
 #define GrOvalOpFactory_DEFINED
 
-#include "include/core/SkRefCnt.h"
-#include "src/gpu/ganesh/GrColor.h"
+#include "include/core/SkTypes.h"
+
+#if !defined(SK_ENABLE_OPTIMIZE_SIZE)
+
+#include "include/core/SkScalar.h"
 #include "src/gpu/ganesh/ops/GrOp.h"
 
-class GrDrawOp;
 class GrPaint;
 class GrRecordingContext;
-struct GrShaderCaps;
 class GrStyle;
 class SkMatrix;
-struct SkRect;
 class SkRRect;
 class SkStrokeRec;
+struct GrShaderCaps;
+struct SkRect;
 
 /*
  * This namespace wraps helper functions that draw ovals, rrects, and arcs (filled & stroked)
@@ -65,5 +66,7 @@ public:
                                  const GrStyle&,
                                  const GrShaderCaps*);
 };
+
+#endif  // !defined(SK_ENABLE_OPTIMIZE_SIZE)
 
 #endif  // GrOvalOpFactory_DEFINED

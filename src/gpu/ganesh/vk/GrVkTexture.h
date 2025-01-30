@@ -8,26 +8,43 @@
 #ifndef GrVkTexture_DEFINED
 #define GrVkTexture_DEFINED
 
-#include "include/gpu/vk/GrVkTypes.h"
+#include "include/core/SkRefCnt.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrTypes.h"
+#include "include/gpu/ganesh/SkImageGanesh.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "include/private/gpu/vk/SkiaVulkan.h"
 #include "src/core/SkLRUCache.h"
 #include "src/gpu/ganesh/GrSamplerState.h"
 #include "src/gpu/ganesh/GrTexture.h"
 #include "src/gpu/ganesh/vk/GrVkImage.h"
 
+#include <cstdint>
+#include <memory>
+#include <string_view>
+#include <utility>
+
 class GrVkDescriptorSet;
 class GrVkGpu;
 class GrVkImageView;
 struct GrVkImageInfo;
+struct SkISize;
+
+namespace skgpu {
+class MutableTextureState;
+enum class Budgeted : bool;
+}  // namespace skgpu
 
 class GrVkTexture : public GrTexture {
 public:
     static sk_sp<GrVkTexture> MakeNewTexture(GrVkGpu*,
-                                             SkBudgeted budgeted,
+                                             skgpu::Budgeted budgeted,
                                              SkISize dimensions,
                                              VkFormat format,
                                              uint32_t mipLevels,
                                              GrProtected,
-                                             GrMipmapStatus);
+                                             GrMipmapStatus,
+                                             std::string_view label);
 
     static sk_sp<GrVkTexture> MakeWrappedTexture(GrVkGpu*,
                                                  SkISize dimensions,
@@ -35,7 +52,7 @@ public:
                                                  GrWrapCacheable,
                                                  GrIOType,
                                                  const GrVkImageInfo&,
-                                                 sk_sp<GrBackendSurfaceMutableStateImpl>);
+                                                 sk_sp<skgpu::MutableTextureState>);
 
     ~GrVkTexture() override;
 
@@ -69,20 +86,20 @@ protected:
     void onAbandon() override;
     void onRelease() override;
 
-    bool onStealBackendTexture(GrBackendTexture*, SkImage::BackendTextureReleaseProc*) override {
+    bool onStealBackendTexture(GrBackendTexture*, SkImages::BackendTextureReleaseProc*) override {
         return false;
     }
 
     // In Vulkan we call the release proc after we are finished with the underlying
     // GrVkImage::Resource object (which occurs after the GPU has finished all work on it).
-    void onSetRelease(sk_sp<skgpu::RefCntedCallback> releaseHelper) override {
+    void onSetRelease(sk_sp<RefCntedReleaseProc> releaseHelper) override {
         // Forward the release proc onto the fTexture's GrVkImage
         fTexture->setResourceRelease(std::move(releaseHelper));
     }
 
 private:
     GrVkTexture(GrVkGpu*,
-                SkBudgeted,
+                skgpu::Budgeted,
                 SkISize,
                 sk_sp<GrVkImage> texture,
                 GrMipmapStatus,
@@ -92,6 +109,8 @@ private:
                 GrIOType,
                 bool isExternal,
                 std::string_view label);
+
+    void onSetLabel() override{}
 
     sk_sp<GrVkImage> fTexture;
 

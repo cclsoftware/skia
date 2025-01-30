@@ -4,37 +4,45 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #ifndef OpsTask_DEFINED
 #define OpsTask_DEFINED
 
-#include "include/core/SkMatrix.h"
+#include "include/core/SkRect.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkSpan.h"
-#include "include/core/SkStrokeRec.h"
 #include "include/core/SkTypes.h"
-#include "include/gpu/GrRecordingContext.h"
-#include "include/private/SkTArray.h"
-#include "include/private/SkTDArray.h"
-#include "src/core/SkArenaAlloc.h"
-#include "src/core/SkClipStack.h"
-#include "src/core/SkStringUtils.h"
-#include "src/core/SkTLazy.h"
-#include "src/gpu/ganesh/GrAppliedClip.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/base/SkTArray.h"
+#include "include/private/base/SkTo.h"
+#include "include/private/base/SkTypeTraits.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/Swizzle.h"
 #include "src/gpu/ganesh/GrDstProxyView.h"
-#include "src/gpu/ganesh/GrGeometryProcessor.h"
 #include "src/gpu/ganesh/GrProcessorSet.h"
 #include "src/gpu/ganesh/GrRenderTask.h"
+#include "src/gpu/ganesh/GrSurfaceProxy.h"
+#include "src/gpu/ganesh/GrXferProcessor.h"
 #include "src/gpu/ganesh/ops/GrOp.h"
 
+#include <array>
+#include <cstdint>
+
+class GrAppliedClip;
+class GrArenas;
 class GrAuditTrail;
 class GrCaps;
-class GrClearOp;
-class GrGpuBuffer;
-class GrRenderTargetProxy;
+class GrDrawingManager;
+class GrOpFlushState;
+class GrRecordingContext;
+class GrResourceAllocator;
+class GrSurfaceProxyView;
+class GrTextureResolveManager;
 class OpsTaskTestingAccess;
+class SkArenaAlloc;
+class SkString;
+enum GrSurfaceOrigin : int;
 
-namespace skgpu::v1 {
+namespace skgpu::ganesh {
 
 class SurfaceDrawContext;
 
@@ -105,13 +113,13 @@ public:
     void visitProxies_debugOnly(const GrVisitProxyFunc&) const override;
 #endif
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
     void dump(const SkString& label,
               SkString indent,
               bool printDependencies,
               bool close) const override;
     const char* name() const final { return "Ops"; }
-    int numOpChains() const { return fOpChains.count(); }
+    int numOpChains() const { return fOpChains.size(); }
     const GrOp* getChain(int index) const { return fOpChains[index].head(); }
 #endif
 
@@ -199,6 +207,8 @@ private:
             return SkToBool(this->head());
         }
 
+        using sk_is_trivially_relocatable = std::true_type;
+
     private:
         class List {
         public:
@@ -218,9 +228,14 @@ private:
 
             void validate() const;
 
+            using sk_is_trivially_relocatable = std::true_type;
+
         private:
             GrOp::Owner fHead{nullptr};
             GrOp* fTail{nullptr};
+
+            static_assert(::sk_is_trivially_relocatable<decltype(fHead)>::value);
+            static_assert(::sk_is_trivially_relocatable<decltype(fTail)>::value);
         };
 
         void validate() const;
@@ -235,6 +250,11 @@ private:
         GrDstProxyView fDstProxyView;
         GrAppliedClip* fAppliedClip;
         SkRect fBounds;
+
+        static_assert(::sk_is_trivially_relocatable<decltype(fProcessorAnalysis)>::value);
+        static_assert(::sk_is_trivially_relocatable<decltype(fDstProxyView)>::value);
+        static_assert(::sk_is_trivially_relocatable<decltype(fAppliedClip)>::value);
+        static_assert(::sk_is_trivially_relocatable<decltype(fBounds)>::value);
     };
 
     void onMakeSkippable() override;
@@ -254,7 +274,7 @@ private:
     // clearing can be done natively, in which case the op list's load ops are sufficient. In other
     // cases, draw ops must be used, which makes the SDC the best place for those decisions. This,
     // however, requires that the SDC be able to coordinate with the op list to achieve similar ends
-    friend class skgpu::v1::SurfaceDrawContext;
+    friend class skgpu::ganesh::SurfaceDrawContext;
 
     GrAuditTrail* fAuditTrail;
 
@@ -275,19 +295,19 @@ private:
     GrXferBarrierFlags fRenderPassXferBarriers = GrXferBarrierFlags::kNone;
 
     // For ops/opsTask we have mean: 5 stdDev: 28
-    SkSTArray<25, OpChain> fOpChains;
+    skia_private::STArray<25, OpChain> fOpChains;
 
     sk_sp<GrArenas> fArenas;
     SkDEBUGCODE(int fNumClips;)
 
     // TODO: We could look into this being a set if we find we're adding a lot of duplicates that is
     // causing slow downs.
-    SkTArray<GrSurfaceProxy*, true> fSampledProxies;
+    skia_private::TArray<GrSurfaceProxy*, true> fSampledProxies;
 
     SkRect fTotalBounds = SkRect::MakeEmpty();
     SkIRect fClippedContentBounds = SkIRect::MakeEmpty();
 };
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh
 
 #endif // OpsTask_DEFINED

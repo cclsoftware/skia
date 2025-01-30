@@ -15,8 +15,9 @@
 #include "include/core/SkTypes.h"
 #include "include/effects/SkGradientShader.h"
 #include "include/effects/SkRuntimeEffect.h"
-#include "include/gpu/GrBackendSurface.h"
-#include "include/gpu/GrDirectContext.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/SkSurfaceGanesh.h"
 
 #include <emscripten/bind.h>
 #include <emscripten/emscripten.h>
@@ -35,15 +36,10 @@
 // This defines the C++ equivalents to the JS WebGPU API.
 #include <webgpu/webgpu_cpp.h>
 
-// Enable workaround for skbug.com/13266. While this workaround is a hack, it allows us to continue
-// the WebGPU bringup until the bug is fixed. Undefine the macro to reproduce the bug.
-// TODO(skia:13266): Remove this workaround once the bug is fixed.
-#define WORKAROUND_SKBUG_13266
-
-static wgpu::SwapChain getSwapChainForCanvas(wgpu::Device device,
-                                             std::string canvasSelector,
-                                             int width,
-                                             int height) {
+static wgpu::Surface getSurfaceForCanvas(wgpu::Device device,
+                                         std::string canvasSelector,
+                                         int width,
+                                         int height) {
     wgpu::SurfaceDescriptorFromCanvasHTMLSelector surfaceSelector;
     surfaceSelector.selector = canvasSelector.c_str();
 
@@ -52,13 +48,16 @@ static wgpu::SwapChain getSwapChainForCanvas(wgpu::Device device,
     wgpu::Instance instance;
     wgpu::Surface surface = instance.CreateSurface(&surface_desc);
 
-    wgpu::SwapChainDescriptor swap_chain_desc;
-    swap_chain_desc.format = wgpu::TextureFormat::BGRA8Unorm;
-    swap_chain_desc.usage = wgpu::TextureUsage::RenderAttachment;
-    swap_chain_desc.presentMode = wgpu::PresentMode::Fifo;
-    swap_chain_desc.width = width;
-    swap_chain_desc.height = height;
-    return device.CreateSwapChain(surface, &swap_chain_desc);
+    wgpu::SurfaceConfiguration config;
+    config.device = device;
+    config.format = wgpu::TextureFormat::BGRA8Unorm;
+    config.usage = wgpu::TextureUsage::RenderAttachment;
+    config.presentMode = wgpu::PresentMode::Fifo;
+    config.width = width;
+    config.height = height;
+    surface.Configure(&config);
+
+    return surface;
 }
 
 enum class DemoKind {
@@ -115,13 +114,9 @@ public:
 
         fWidth = width;
         fHeight = height;
-        fCanvasSwapChain = getSwapChainForCanvas(device, canvasSelector, width, height);
+        fCanvasSurface = getSurfaceForCanvas(device, canvasSelector, width, height);
         fContext = context;
         fEffect = effect;
-
-#ifdef WORKAROUND_SKBUG_13266
-        fCanvasSelector = std::move(canvasSelector);
-#endif  // WORKAROUND_SKBUG_13266
 
         return true;
     }
@@ -129,23 +124,22 @@ public:
     void setKind(DemoKind kind) { fDemoKind = kind; }
 
     void draw(int timestamp) {
-#ifdef WORKAROUND_SKBUG_13266
-        this->init(fCanvasSelector, fWidth, fHeight);
-#endif  // WORKAROUND_SKBUG_13266
+        wgpu::SurfaceTexture surfaceTexture;
+        fCanvasSurface.GetCurrentTexture(&surfaceTexture);
 
         GrDawnRenderTargetInfo rtInfo;
-        rtInfo.fTextureView = fCanvasSwapChain.GetCurrentTextureView();
+        rtInfo.fTextureView = surfaceTexture.texture.CreateView();
         rtInfo.fFormat = wgpu::TextureFormat::BGRA8Unorm;
         rtInfo.fLevelCount = 1;
         GrBackendRenderTarget backendRenderTarget(fWidth, fHeight, 1, 8, rtInfo);
         SkSurfaceProps surfaceProps(0, kRGB_H_SkPixelGeometry);
 
-        sk_sp<SkSurface> surface = SkSurface::MakeFromBackendRenderTarget(fContext.get(),
-                                                                          backendRenderTarget,
-                                                                          kTopLeft_GrSurfaceOrigin,
-                                                                          kN32_SkColorType,
-                                                                          nullptr,
-                                                                          &surfaceProps);
+        sk_sp<SkSurface> surface = SkSurfaces::WrapBackendRenderTarget(fContext.get(),
+                                                                       backendRenderTarget,
+                                                                       kTopLeft_GrSurfaceOrigin,
+                                                                       kN32_SkColorType,
+                                                                       nullptr,
+                                                                       &surfaceProps);
 
         SkPaint paint;
         if (fDemoKind == DemoKind::SOLID_COLOR) {
@@ -158,14 +152,8 @@ public:
 
         // Schedule the recorded commands and wait until the GPU has executed them.
         surface->getCanvas()->drawPaint(paint);
-        surface->flushAndSubmit(true);
+        fContext->flushAndSubmit(surface, true);
         fFrameCount++;
-
-#ifdef WORKAROUND_SKBUG_13266
-        // Dropping the context here resets all staging buffers and avoids unmapped buffers
-        // to be reused as described in skbug.com/13266.
-        fContext = nullptr;
-#endif  // WORKAROUND_SKBUG_13266
     }
 
     void drawSolidColor(SkPaint* paint) {
@@ -200,13 +188,10 @@ public:
     }
 
 private:
-#ifdef WORKAROUND_SKBUG_13266
-    std::string fCanvasSelector;
-#endif  // WORKAROUND_SKBUG_13266
     int fFrameCount = 0;
     int fWidth;
     int fHeight;
-    wgpu::SwapChain fCanvasSwapChain;
+    wgpu::Surface fCanvasSurface;
     sk_sp<GrDirectContext> fContext;
     sk_sp<SkRuntimeEffect> fEffect;
     DemoKind fDemoKind = DemoKind::SOLID_COLOR;

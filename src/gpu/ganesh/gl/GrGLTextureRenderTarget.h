@@ -4,15 +4,25 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
-
 #ifndef GrGLTextureRenderTarget_DEFINED
 #define GrGLTextureRenderTarget_DEFINED
 
+#include "include/core/SkRefCnt.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
 #include "src/gpu/ganesh/gl/GrGLRenderTarget.h"
 #include "src/gpu/ganesh/gl/GrGLTexture.h"
 
+#include <cstddef>
+#include <string_view>
+
 class GrGLGpu;
+class GrGLTextureParameters;
+class SkTraceMemoryDump;
+enum class GrMipmapStatus;
+enum class GrWrapCacheable : bool;
+namespace skgpu {
+enum class Budgeted : bool;
+}
 
 #ifdef SK_BUILD_FOR_WIN
 // Windows gives bogus warnings about inheriting asTexture/asRenderTarget via dominance.
@@ -25,7 +35,7 @@ public:
     // We're virtually derived from GrSurface (via both GrGLTexture and GrGLRenderTarget) so its
     // constructor must be explicitly called.
     GrGLTextureRenderTarget(GrGLGpu* gpu,
-                            SkBudgeted budgeted,
+                            skgpu::Budgeted budgeted,
                             int sampleCount,
                             const GrGLTexture::Desc& texDesc,
                             const GrGLRenderTarget::IDs&,
@@ -42,7 +52,8 @@ public:
                                                       sk_sp<GrGLTextureParameters>,
                                                       const GrGLRenderTarget::IDs&,
                                                       GrWrapCacheable,
-                                                      GrMipmapStatus);
+                                                      GrMipmapStatus,
+                                                      std::string_view label);
 
     GrBackendFormat backendFormat() const override {
         // It doesn't matter if we take the texture or render target path, so just pick texture.
@@ -72,6 +83,8 @@ private:
                             std::string_view label);
 
     size_t onGpuMemorySize() const override;
+
+    void onSetLabel() override;
 };
 
 #ifdef SK_BUILD_FOR_WIN

@@ -12,7 +12,6 @@
 #include "include/core/SkBlurTypes.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColorFilter.h"
-#include "include/core/SkFlattenable.h"
 #include "include/core/SkMaskFilter.h"
 #include "include/core/SkMatrix.h"
 #include "include/core/SkPaint.h"
@@ -23,118 +22,42 @@
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkVertices.h"
 #include "include/private/SkIDChangeListener.h"
-#include "include/private/SkTPin.h"
-#include "include/private/SkTemplates.h"
-#include "include/utils/SkRandom.h"
+#include "include/private/base/SkFloatingPoint.h"
+#include "include/private/base/SkTPin.h"
+#include "include/private/base/SkTemplates.h"
+#include "include/private/base/SkTo.h"
+#include "src/base/SkRandom.h"
 #include "src/core/SkBlurMask.h"
-#include "src/core/SkColorFilterBase.h"
 #include "src/core/SkColorFilterPriv.h"
 #include "src/core/SkDevice.h"
 #include "src/core/SkDrawShadowInfo.h"
-#include "src/core/SkEffectPriv.h"
 #include "src/core/SkPathPriv.h"
-#include "src/core/SkRasterPipeline.h"
 #include "src/core/SkResourceCache.h"
-#include "src/core/SkVM.h"
 #include "src/core/SkVerticesPriv.h"
+
+#if !defined(SK_ENABLE_OPTIMIZE_SIZE)
 #include "src/utils/SkShadowTessellator.h"
-
-#if SK_SUPPORT_GPU
-#include "include/effects/SkRuntimeEffect.h"
-#include "src/core/SkRuntimeEffectPriv.h"
-#include "src/gpu/ganesh/GrFragmentProcessor.h"
-#include "src/gpu/ganesh/GrStyle.h"
-#include "src/gpu/ganesh/effects/GrSkSLFP.h"
-#include "src/gpu/ganesh/geometry/GrStyledShape.h"
-
-class GrColorInfo;
-class GrRecordingContext;
 #endif
 
-#include <string.h>
+#if defined(SK_GANESH)
+#include "src/gpu/ganesh/GrStyle.h"
+#include "src/gpu/ganesh/geometry/GrStyledShape.h"
+#endif
+
 #include <algorithm>
-#include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <new>
 #include <utility>
 
-class SkArenaAlloc;
-class SkColorInfo;
+using namespace skia_private;
+
 class SkRRect;
-class SkReadBuffer;
-class SkWriteBuffer;
-
-/**
-*  Gaussian color filter -- produces a Gaussian ramp based on the color's B value,
-*                           then blends with the color's G value.
-*                           Final result is black with alpha of Gaussian(B)*G.
-*                           The assumption is that the original color's alpha is 1.
-*/
-class SkGaussianColorFilter : public SkColorFilterBase {
-public:
-    SkGaussianColorFilter() : INHERITED() {}
-
-#if SK_SUPPORT_GPU
-    GrFPResult asFragmentProcessor(std::unique_ptr<GrFragmentProcessor> inputFP,
-                                   GrRecordingContext*, const GrColorInfo&) const override;
-#endif
-
-protected:
-    void flatten(SkWriteBuffer&) const override {}
-    bool onAppendStages(const SkStageRec& rec, bool shaderIsOpaque) const override {
-        rec.fPipeline->append(SkRasterPipeline::gauss_a_to_rgba);
-        return true;
-    }
-
-    skvm::Color onProgram(skvm::Builder* p, skvm::Color c, const SkColorInfo& dst, skvm::Uniforms*,
-                          SkArenaAlloc*) const override {
-        // x = 1 - x;
-        // exp(-x * x * 4) - 0.018f;
-        // ... now approximate with quartic
-        //
-        skvm::F32 x = p->splat(-2.26661229133605957031f);
-                  x = c.a * x + 2.89795351028442382812f;
-                  x = c.a * x + 0.21345567703247070312f;
-                  x = c.a * x + 0.15489584207534790039f;
-                  x = c.a * x + 0.00030726194381713867f;
-        return {x, x, x, x};
-    }
-
-private:
-    SK_FLATTENABLE_HOOKS(SkGaussianColorFilter)
-
-    using INHERITED = SkColorFilterBase;
-};
-
-sk_sp<SkFlattenable> SkGaussianColorFilter::CreateProc(SkReadBuffer&) {
-    return SkColorFilterPriv::MakeGaussian();
-}
-
-#if SK_SUPPORT_GPU
-
-GrFPResult SkGaussianColorFilter::asFragmentProcessor(std::unique_ptr<GrFragmentProcessor> inputFP,
-                                                      GrRecordingContext*,
-                                                      const GrColorInfo&) const {
-    static auto effect = SkMakeRuntimeEffect(SkRuntimeEffect::MakeForColorFilter, R"(
-        half4 main(half4 inColor) {
-            half factor = 1 - inColor.a;
-            factor = exp(-factor * factor * 4) - 0.018;
-            return half4(factor);
-        }
-    )");
-    SkASSERT(SkRuntimeEffectPriv::SupportsConstantOutputForConstantInput(effect));
-    return GrFPSuccess(
-            GrSkSLFP::Make(effect, "gaussian_fp", std::move(inputFP), GrSkSLFP::OptFlags::kNone));
-}
-#endif
-
-sk_sp<SkColorFilter> SkColorFilterPriv::MakeGaussian() {
-    return sk_sp<SkColorFilter>(new SkGaussianColorFilter);
-}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+#if !defined(SK_ENABLE_OPTIMIZE_SIZE)
 namespace {
 
 uint64_t resource_cache_shared_id() {
@@ -425,20 +348,20 @@ public:
     ShadowedPath(const SkPath* path, const SkMatrix* viewMatrix)
             : fPath(path)
             , fViewMatrix(viewMatrix)
-#if SK_SUPPORT_GPU
+#if defined(SK_GANESH)
             , fShapeForKey(*path, GrStyle::SimpleFill())
 #endif
     {}
 
     const SkPath& path() const { return *fPath; }
     const SkMatrix& viewMatrix() const { return *fViewMatrix; }
-#if SK_SUPPORT_GPU
+#if defined(SK_GANESH)
     /** Negative means the vertices should not be cached for this path. */
     int keyBytes() const { return fShapeForKey.unstyledKeySize() * sizeof(uint32_t); }
     void writeKey(void* key) const {
         fShapeForKey.writeUnstyledKey(reinterpret_cast<uint32_t*>(key));
     }
-    bool isRRect(SkRRect* rrect) { return fShapeForKey.asRRect(rrect, nullptr, nullptr, nullptr); }
+    bool isRRect(SkRRect* rrect) { return fShapeForKey.asRRect(rrect, nullptr); }
 #else
     int keyBytes() const { return -1; }
     void writeKey(void* key) const { SK_ABORT("Should never be called"); }
@@ -448,7 +371,7 @@ public:
 private:
     const SkPath* fPath;
     const SkMatrix* fViewMatrix;
-#if SK_SUPPORT_GPU
+#if defined(SK_GANESH)
     GrStyledShape fShapeForKey;
 #endif
 };
@@ -492,12 +415,17 @@ bool draw_shadow(const FACTORY& factory,
     FindContext<FACTORY> context(&path.viewMatrix(), &factory);
 
     SkResourceCache::Key* key = nullptr;
-    SkAutoSTArray<32 * 4, uint8_t> keyStorage;
+    constexpr int kMinBytes = 128;
+    // We need to make this array be of the cache's Key so the memory we create the Key in
+    // is properly aligned.
+    AutoSTArray<kMinBytes / sizeof(SkResourceCache::Key), SkResourceCache::Key> keyStorage;
     int keyDataBytes = path.keyBytes();
     if (keyDataBytes >= 0) {
+        // Store the key...
         keyStorage.reset(keyDataBytes + sizeof(SkResourceCache::Key));
         key = new (keyStorage.begin()) SkResourceCache::Key();
-        path.writeKey((uint32_t*)(keyStorage.begin() + sizeof(*key)));
+        // ... followed by the bytes from path.
+        path.writeKey((uint32_t*)(((uint8_t*)keyStorage.begin()) + sizeof(SkResourceCache::Key)));
         key->init(&kNamespace, resource_cache_shared_id(), keyDataBytes);
         SkResourceCache::Find(*key, FindVisitor<FACTORY>, &context);
     }
@@ -550,6 +478,7 @@ bool draw_shadow(const FACTORY& factory,
 static bool tilted(const SkPoint3& zPlaneParams) {
     return !SkScalarNearlyZero(zPlaneParams.fX) || !SkScalarNearlyZero(zPlaneParams.fY);
 }
+#endif // SK_ENABLE_OPTIMIZE_SIZE
 
 void SkShadowUtils::ComputeTonalColors(SkColor inAmbientColor, SkColor inSpotColor,
                                        SkColor* outAmbientColor, SkColor* outSpotColor) {
@@ -663,10 +592,18 @@ bool SkShadowUtils::GetLocalBounds(const SkMatrix& ctm, const SkPath& path,
 
 static bool validate_rec(const SkDrawShadowRec& rec) {
     return rec.fLightPos.isFinite() && rec.fZPlaneParams.isFinite() &&
-           SkScalarIsFinite(rec.fLightRadius);
+           SkIsFinite(rec.fLightRadius);
 }
 
-void SkBaseDevice::drawShadow(const SkPath& path, const SkDrawShadowRec& rec) {
+void SkDevice::drawShadow(const SkPath& path, const SkDrawShadowRec& rec) {
+    if (!validate_rec(rec)) {
+        return;
+    }
+
+    SkMatrix viewMatrix = this->localToDevice();
+    SkAutoDeviceTransformRestore adr(this, SkMatrix::I());
+
+#if !defined(SK_ENABLE_OPTIMIZE_SIZE)
     auto drawVertsProc = [this](const SkVertices* vertices, SkBlendMode mode, const SkPaint& paint,
                                 SkScalar tx, SkScalar ty, bool hasPerspective) {
         if (vertices->priv().vertexCount()) {
@@ -684,21 +621,15 @@ void SkBaseDevice::drawShadow(const SkPath& path, const SkDrawShadowRec& rec) {
         }
     };
 
-    if (!validate_rec(rec)) {
-        return;
-    }
-
-    SkMatrix viewMatrix = this->localToDevice();
-    SkAutoDeviceTransformRestore adr(this, SkMatrix::I());
-
     ShadowedPath shadowedPath(&path, &viewMatrix);
 
     bool tiltZPlane = tilted(rec.fZPlaneParams);
     bool transparent = SkToBool(rec.fFlags & SkShadowFlags::kTransparentOccluder_ShadowFlag);
-    bool directional = SkToBool(rec.fFlags & SkShadowFlags::kDirectionalLight_ShadowFlag);
     bool useBlur = SkToBool(rec.fFlags & SkShadowFlags::kConcaveBlurOnly_ShadowFlag) &&
                    !path.isConvex();
     bool uncached = tiltZPlane || path.isVolatile();
+#endif
+    bool directional = SkToBool(rec.fFlags & SkShadowFlags::kDirectionalLight_ShadowFlag);
 
     SkPoint3 zPlaneParams = rec.fZPlaneParams;
     SkPoint3 devLightPos = rec.fLightPos;
@@ -709,6 +640,7 @@ void SkBaseDevice::drawShadow(const SkPath& path, const SkDrawShadowRec& rec) {
 
     if (SkColorGetA(rec.fAmbientColor) > 0) {
         bool success = false;
+#if !defined(SK_ENABLE_OPTIMIZE_SIZE)
         if (uncached && !useBlur) {
             sk_sp<SkVertices> vertices = SkShadowTessellator::MakeAmbient(path, viewMatrix,
                                                                           zPlaneParams,
@@ -745,6 +677,7 @@ void SkBaseDevice::drawShadow(const SkPath& path, const SkDrawShadowRec& rec) {
 
             success = draw_shadow(factory, drawVertsProc, shadowedPath, rec.fAmbientColor);
         }
+#endif // !defined(SK_ENABLE_OPTIMIZE_SIZE)
 
         // All else has failed, draw with blur
         if (!success) {
@@ -792,12 +725,13 @@ void SkBaseDevice::drawShadow(const SkPath& path, const SkDrawShadowRec& rec) {
             SkScalar sigma = SkBlurMask::ConvertRadiusToSigma(blurRadius);
             bool respectCTM = false;
             paint.setMaskFilter(SkMaskFilter::MakeBlur(kNormal_SkBlurStyle, sigma, respectCTM));
-            this->drawPath(devSpacePath, paint);
+            this->drawPath(devSpacePath, paint, true);
         }
     }
 
     if (SkColorGetA(rec.fSpotColor) > 0) {
         bool success = false;
+#if !defined(SK_ENABLE_OPTIMIZE_SIZE)
         if (uncached && !useBlur) {
             sk_sp<SkVertices> vertices = SkShadowTessellator::MakeSpot(path, viewMatrix,
                                                                        zPlaneParams,
@@ -891,6 +825,7 @@ void SkBaseDevice::drawShadow(const SkPath& path, const SkDrawShadowRec& rec) {
 #endif
             success = draw_shadow(factory, drawVertsProc, shadowedPath, color);
         }
+#endif // !defined(SK_ENABLE_OPTIMIZE_SIZE)
 
         // All else has failed, draw with blur
         if (!success) {
@@ -909,7 +844,7 @@ void SkBaseDevice::drawShadow(const SkPath& path, const SkDrawShadowRec& rec) {
             SkScalar sigma = SkBlurMask::ConvertRadiusToSigma(radius);
             bool respectCTM = false;
             paint.setMaskFilter(SkMaskFilter::MakeBlur(kNormal_SkBlurStyle, sigma, respectCTM));
-            this->drawPath(path, paint);
+            this->drawPath(path, paint, false);
         }
     }
 }

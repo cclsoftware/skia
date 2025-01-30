@@ -4,41 +4,87 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/ops/DashOp.h"
 
-#include "include/gpu/GrRecordingContext.h"
+#include "include/core/SkMatrix.h"
+#include "include/core/SkPaint.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkScalar.h"
+#include "include/core/SkString.h"
+#include "include/core/SkStrokeRec.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
+#include "include/private/SkColorData.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/base/SkPoint_impl.h"
+#include "include/private/base/SkTArray.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/base/SkArenaAlloc.h"
+#include "src/base/SkSafeMath.h"
 #include "src/core/SkMatrixPriv.h"
+#include "src/core/SkPathEffectBase.h"
 #include "src/core/SkPointPriv.h"
+#include "src/core/SkSLTypeShared.h"
 #include "src/gpu/BufferWriter.h"
 #include "src/gpu/KeyBuilder.h"
 #include "src/gpu/ganesh/GrAppliedClip.h"
-#include "src/gpu/ganesh/GrCaps.h"
+#include "src/gpu/ganesh/GrColor.h"
 #include "src/gpu/ganesh/GrDefaultGeoProcFactory.h"
 #include "src/gpu/ganesh/GrGeometryProcessor.h"
-#include "src/gpu/ganesh/GrMemoryPool.h"
 #include "src/gpu/ganesh/GrOpFlushState.h"
-#include "src/gpu/ganesh/GrProcessor.h"
+#include "src/gpu/ganesh/GrPaint.h"
+#include "src/gpu/ganesh/GrPipeline.h"
+#include "src/gpu/ganesh/GrProcessorAnalysis.h"
+#include "src/gpu/ganesh/GrProcessorSet.h"
+#include "src/gpu/ganesh/GrProcessorUnitTest.h"
 #include "src/gpu/ganesh/GrProgramInfo.h"
-#include "src/gpu/ganesh/GrRecordingContextPriv.h"
 #include "src/gpu/ganesh/GrStyle.h"
-#include "src/gpu/ganesh/SkGr.h"
+#include "src/gpu/ganesh/GrUserStencilSettings.h"
 #include "src/gpu/ganesh/geometry/GrQuad.h"
 #include "src/gpu/ganesh/glsl/GrGLSLFragmentShaderBuilder.h"
 #include "src/gpu/ganesh/glsl/GrGLSLProgramDataManager.h"
-#include "src/gpu/ganesh/glsl/GrGLSLUniformHandler.h"
 #include "src/gpu/ganesh/glsl/GrGLSLVarying.h"
 #include "src/gpu/ganesh/glsl/GrGLSLVertexGeoBuilder.h"
+#include "src/gpu/ganesh/ops/GrDrawOp.h"
 #include "src/gpu/ganesh/ops/GrMeshDrawOp.h"
 #include "src/gpu/ganesh/ops/GrSimpleMeshDrawOpHelper.h"
 
-using AAMode = skgpu::v1::DashOp::AAMode;
-
-#if GR_TEST_UTILS
-static const int kAAModeCnt = static_cast<int>(skgpu::v1::DashOp::AAMode::kCoverageWithMSAA) + 1;
+#if defined(GPU_TEST_UTILS)
+#include "src/base/SkRandom.h"
+#include "src/gpu/ganesh/GrDrawOpTest.h"
+#include "src/gpu/ganesh/GrTestUtils.h"
 #endif
 
-namespace skgpu::v1::DashOp {
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <utility>
+
+class GrCaps;
+class GrDstProxyView;
+class GrGLSLUniformHandler;
+class GrMeshDrawTarget;
+class GrSurfaceProxyView;
+enum class GrXferBarrierFlags;
+struct GrShaderCaps;
+struct GrSimpleMesh;
+
+namespace skgpu {
+namespace ganesh {
+class SurfaceDrawContext;
+}
+}  // namespace skgpu
+
+using namespace skia_private;
+
+using AAMode = skgpu::ganesh::DashOp::AAMode;
+
+#if defined(GPU_TEST_UTILS)
+constexpr int kAAModeCnt = static_cast<int>(skgpu::ganesh::DashOp::AAMode::kCoverageWithMSAA) + 1;
+#endif
+
+namespace skgpu::ganesh::DashOp {
 
 namespace {
 
@@ -329,7 +375,7 @@ private:
     }
 
     void onPrepareDraws(GrMeshDrawTarget* target) override {
-        int instanceCount = fLines.count();
+        int instanceCount = fLines.size();
         SkPaint::Cap cap = this->cap();
         DashCap capType = (SkPaint::kRound_Cap == cap) ? kRound_DashCap : kNonRound_DashCap;
 
@@ -348,9 +394,10 @@ private:
         // rectangles.  We preserve all of this work in the rects / draws arrays below.  Then we
         // iterate again over these decomposed dashes to generate vertices
         static const int kNumStackDashes = 128;
-        SkSTArray<kNumStackDashes, SkRect, true> rects;
-        SkSTArray<kNumStackDashes, DashDraw, true> draws;
+        STArray<kNumStackDashes, SkRect, true> rects;
+        STArray<kNumStackDashes, DashDraw, true> draws;
 
+        SkSafeMath safeMath;
         int totalRectCount = 0;
         int rectOffset = 0;
         rects.push_back_n(3 * instanceCount);
@@ -517,9 +564,9 @@ private:
                 devIntervals[0] = lineLength;
             }
 
-            totalRectCount += !lineDone ? 1 : 0;
-            totalRectCount += hasStartRect ? 1 : 0;
-            totalRectCount += hasEndRect ? 1 : 0;
+            totalRectCount = safeMath.addInt(totalRectCount, !lineDone ? 1 : 0);
+            totalRectCount = safeMath.addInt(totalRectCount, hasStartRect ? 1 : 0);
+            totalRectCount = safeMath.addInt(totalRectCount, hasEndRect ? 1 : 0);
 
             if (SkPaint::kRound_Cap == cap && 0 != args.fSrcStrokeWidth) {
                 // need to adjust this for round caps to correctly set the dashPos attrib on
@@ -559,7 +606,7 @@ private:
             draw.fHasEndRect = hasEndRect;
         }
 
-        if (!totalRectCount) {
+        if (!totalRectCount || !safeMath) {
             return;
         }
 
@@ -654,11 +701,11 @@ private:
             return CombineResult::kCannotCombine;
         }
 
-        fLines.push_back_n(that->fLines.count(), that->fLines.begin());
+        fLines.push_back_n(that->fLines.size(), that->fLines.begin());
         return CombineResult::kMerged;
     }
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
     SkString onDumpInfo() const override {
         SkString string;
         for (const auto& geo : fLines) {
@@ -682,7 +729,7 @@ private:
     bool fullDash() const { return fFullDash; }
     SkPaint::Cap cap() const { return fCap; }
 
-    SkSTArray<1, LineData, true> fLines;
+    STArray<1, LineData, true> fLines;
     SkPMColor4f fColor;
     bool fUsesLocalCoords : 1;
     bool fFullDash : 1;
@@ -709,7 +756,7 @@ private:
  */
 class DashingCircleEffect : public GrGeometryProcessor {
 public:
-    typedef SkPathEffect::DashInfo DashInfo;
+    typedef SkPathEffectBase::DashInfo DashInfo;
 
     static GrGeometryProcessor* Make(SkArenaAlloc* arena,
                                      const SkPMColor4f&,
@@ -756,9 +803,6 @@ private:
 
     SkMatrix    fLocalMatrix         = SkMatrix::InvalidMatrix();
     SkPMColor4f fColor               = SK_PMColor4fILLEGAL;
-    float       fPrevRadius          = SK_FloatNaN;
-    float       fPrevCenterX         = SK_FloatNaN;
-    float       fPrevIntervalLength  = SK_FloatNaN;
 
     UniformHandle fParamUniform;
     UniformHandle fColorUniform;
@@ -871,9 +915,9 @@ DashingCircleEffect::DashingCircleEffect(const SkPMColor4f& color,
     this->setVertexAttributesWithImplicitOffsets(&fInPosition, 3);
 }
 
-GR_DEFINE_GEOMETRY_PROCESSOR_TEST(DashingCircleEffect);
+GR_DEFINE_GEOMETRY_PROCESSOR_TEST(DashingCircleEffect)
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
 GrGeometryProcessor* DashingCircleEffect::TestCreate(GrProcessorTestData* d) {
     AAMode aaMode = static_cast<AAMode>(d->fRandom->nextULessThan(kAAModeCnt));
     GrColor color = GrTest::RandomColor(d->fRandom);
@@ -899,7 +943,7 @@ GrGeometryProcessor* DashingCircleEffect::TestCreate(GrProcessorTestData* d) {
  */
 class DashingLineEffect : public GrGeometryProcessor {
 public:
-    typedef SkPathEffect::DashInfo DashInfo;
+    typedef SkPathEffectBase::DashInfo DashInfo;
 
     static GrGeometryProcessor* Make(SkArenaAlloc* arena,
                                      const SkPMColor4f&,
@@ -1085,9 +1129,9 @@ DashingLineEffect::DashingLineEffect(const SkPMColor4f& color,
     this->setVertexAttributesWithImplicitOffsets(&fInPosition, 3);
 }
 
-GR_DEFINE_GEOMETRY_PROCESSOR_TEST(DashingLineEffect);
+GR_DEFINE_GEOMETRY_PROCESSOR_TEST(DashingLineEffect)
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
 GrGeometryProcessor* DashingLineEffect::TestCreate(GrProcessorTestData* d) {
     AAMode aaMode = static_cast<AAMode>(d->fRandom->nextULessThan(kAAModeCnt));
     GrColor color = GrTest::RandomColor(d->fRandom);
@@ -1224,11 +1268,9 @@ bool CanDrawDashLine(const SkPoint pts[2], const GrStyle& style, const SkMatrix&
     return true;
 }
 
-} // namespace skgpu::v1::DashOp
+} // namespace skgpu::ganesh::DashOp
 
-#if GR_TEST_UTILS
-
-#include "src/gpu/ganesh/GrDrawOpTest.h"
+#if defined(GPU_TEST_UTILS)
 
 GR_DRAW_OP_TEST_DEFINE(DashOpImpl) {
     SkMatrix viewMatrix = GrTest::TestMatrixPreservesRightAngles(random);
@@ -1300,8 +1342,8 @@ GR_DRAW_OP_TEST_DEFINE(DashOpImpl) {
 
     GrStyle style(p);
 
-    return skgpu::v1::DashOp::MakeDashLineOp(context, std::move(paint), viewMatrix, pts, aaMode,
-                                             style, GrGetRandomStencil(random, context));
+    return skgpu::ganesh::DashOp::MakeDashLineOp(context, std::move(paint), viewMatrix, pts, aaMode,
+                                                 style, GrGetRandomStencil(random, context));
 }
 
-#endif // GR_TEST_UTILS
+#endif // defined(GPU_TEST_UTILS)

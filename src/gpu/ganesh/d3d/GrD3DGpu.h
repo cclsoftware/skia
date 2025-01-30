@@ -8,7 +8,9 @@
 #ifndef GrD3DGpu_DEFINED
 #define GrD3DGpu_DEFINED
 
-#include "include/private/SkDeque.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkDeque.h"
+#include "src/gpu/RefCntedCallback.h"
 #include "src/gpu/ganesh/GrGpu.h"
 #include "src/gpu/ganesh/GrRenderTarget.h"
 #include "src/gpu/ganesh/GrSemaphore.h"
@@ -17,18 +19,22 @@
 #include "src/gpu/ganesh/d3d/GrD3DCommandList.h"
 #include "src/gpu/ganesh/d3d/GrD3DResourceProvider.h"
 
+#include <optional>
+#include <utility>
+
 struct GrD3DBackendContext;
 class GrD3DOpsRenderPass;
 struct GrD3DOptions;
 class GrPipeline;
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
 struct IDXGraphicsAnalysis;
 #endif
 
 class GrD3DGpu : public GrGpu {
 public:
-    static sk_sp<GrGpu> Make(const GrD3DBackendContext& backendContext, const GrContextOptions&,
-                             GrDirectContext*);
+    static std::unique_ptr<GrGpu> Make(const GrD3DBackendContext& backendContext,
+                                       const GrContextOptions&,
+                                       GrDirectContext*);
 
     ~GrD3DGpu() override;
 
@@ -59,7 +65,7 @@ public:
 
     bool compile(const GrProgramDesc&, const GrProgramInfo&) override;
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
     bool isTestingOnlyBackendTexture(const GrBackendTexture&) const override;
 
     GrBackendRenderTarget createTestingOnlyBackendRenderTarget(SkISize dimensions,
@@ -69,7 +75,7 @@ public:
     void deleteTestingOnlyBackendRenderTarget(const GrBackendRenderTarget&) override;
 
     void testingOnly_startCapture() override;
-    void testingOnly_endCapture() override;
+    void testingOnly_stopCapture() override;
 
     void resetShaderCacheForTesting() const override {
         fResourceProvider.resetShaderCacheForTesting();
@@ -99,11 +105,7 @@ public:
                                    int numBarriers,
                                    D3D12_RESOURCE_TRANSITION_BARRIER* barriers) const;
 
-    GrFence SK_WARN_UNUSED_RESULT insertFence() override;
-    bool waitFence(GrFence) override;
-    void deleteFence(GrFence) override {}
-
-    std::unique_ptr<GrSemaphore> SK_WARN_UNUSED_RESULT makeSemaphore(bool isOwned) override;
+    [[nodiscard]] std::unique_ptr<GrSemaphore> makeSemaphore(bool isOwned) override;
     std::unique_ptr<GrSemaphore> wrapBackendSemaphore(const GrBackendSemaphore&,
                                                       GrSemaphoreWrapType,
                                                       GrWrapOwnership) override;
@@ -117,7 +119,7 @@ public:
     void endRenderPass(GrRenderTarget* target, GrSurfaceOrigin origin,
                        const SkIRect& bounds);
 
-    void checkFinishProcs() override { this->checkForFinishedCommandLists(); }
+    void checkFinishedCallbacks() override { this->checkForFinishedCommandLists(); }
     void finishOutstandingGpuWork() override;
 
 private:
@@ -135,17 +137,19 @@ private:
                                      const GrBackendFormat&,
                                      GrRenderable,
                                      int renderTargetSampleCnt,
-                                     SkBudgeted,
+                                     skgpu::Budgeted,
                                      GrProtected,
                                      int mipLevelCount,
-                                     uint32_t levelClearMask) override;
+                                     uint32_t levelClearMask,
+                                     std::string_view label) override;
 
     sk_sp<GrTexture> onCreateCompressedTexture(SkISize dimensions,
                                                const GrBackendFormat&,
-                                               SkBudgeted,
-                                               GrMipmapped,
+                                               skgpu::Budgeted,
+                                               skgpu::Mipmapped,
                                                GrProtected,
-                                               const void* data, size_t dataSize) override;
+                                               const void* data,
+                                               size_t dataSize) override;
 
     sk_sp<GrTexture> onWrapBackendTexture(const GrBackendTexture&,
                                           GrWrapOwnership,
@@ -162,8 +166,9 @@ private:
 
     sk_sp<GrRenderTarget> onWrapBackendRenderTarget(const GrBackendRenderTarget&) override;
 
-    sk_sp<GrGpuBuffer> onCreateBuffer(size_t sizeInBytes, GrGpuBufferType, GrAccessPattern,
-                                      const void*) override;
+    sk_sp<GrGpuBuffer> onCreateBuffer(size_t sizeInBytes,
+                                      GrGpuBufferType,
+                                      GrAccessPattern) override;
 
     bool onReadPixels(GrSurface*,
                       SkIRect,
@@ -180,6 +185,12 @@ private:
                        int mipLevelCount,
                        bool prepForTexSampling) override;
 
+    bool onTransferFromBufferToBuffer(sk_sp<GrGpuBuffer> src,
+                                      size_t srcOffset,
+                                      sk_sp<GrGpuBuffer> dst,
+                                      size_t dstOffset,
+                                      size_t size) override;
+
     bool onTransferPixelsTo(GrTexture*,
                             SkIRect,
                             GrColorType surfaceColorType,
@@ -195,39 +206,46 @@ private:
                               sk_sp<GrGpuBuffer>,
                               size_t offset) override;
 
-    bool onCopySurface(GrSurface* dst, GrSurface* src, const SkIRect& srcRect,
-                       const SkIPoint& dstPoint) override;
+    bool onCopySurface(GrSurface* dst, const SkIRect& dstRect,
+                       GrSurface* src, const SkIRect& srcRect,
+                       GrSamplerState::Filter) override;
 
     bool onRegenerateMipMapLevels(GrTexture*) override;
 
     void onResolveRenderTarget(GrRenderTarget* target, const SkIRect&) override;
 
-    void addFinishedProc(GrGpuFinishedProc finishedProc,
-                         GrGpuFinishedContext finishedContext) override;
+    void addFinishedCallback(skgpu::AutoCallback callback,
+                             std::optional<GrTimerQuery> timerQuery) override {
+        SkASSERT(!timerQuery);
+        this->addFinishedCallback(skgpu::RefCntedCallback::Make(std::move(callback)));
+    }
+
     void addFinishedCallback(sk_sp<skgpu::RefCntedCallback> finishedCallback);
 
-    GrOpsRenderPass* onGetOpsRenderPass(GrRenderTarget*,
-                                        bool useMSAASurface,
-                                        GrAttachment*,
-                                        GrSurfaceOrigin,
-                                        const SkIRect&,
-                                        const GrOpsRenderPass::LoadAndStoreInfo&,
-                                        const GrOpsRenderPass::StencilLoadAndStoreInfo&,
-                                        const SkTArray<GrSurfaceProxy*, true>& sampledProxies,
-                                        GrXferBarrierFlags renderPassXferBarriers) override;
+    GrOpsRenderPass* onGetOpsRenderPass(
+            GrRenderTarget*,
+            bool useMSAASurface,
+            GrAttachment*,
+            GrSurfaceOrigin,
+            const SkIRect&,
+            const GrOpsRenderPass::LoadAndStoreInfo&,
+            const GrOpsRenderPass::StencilLoadAndStoreInfo&,
+            const skia_private::TArray<GrSurfaceProxy*, true>& sampledProxies,
+            GrXferBarrierFlags renderPassXferBarriers) override;
 
     void prepareSurfacesForBackendAccessAndStateUpdates(
             SkSpan<GrSurfaceProxy*> proxies,
-            SkSurface::BackendSurfaceAccess access,
-            const GrBackendSurfaceMutableState* newState) override;
+            SkSurfaces::BackendSurfaceAccess access,
+            const skgpu::MutableTextureState* newState) override;
 
-    bool onSubmitToGpu(bool syncCpu) override;
+    bool onSubmitToGpu(const GrSubmitInfo& info) override;
 
     GrBackendTexture onCreateBackendTexture(SkISize dimensions,
                                             const GrBackendFormat&,
                                             GrRenderable,
-                                            GrMipmapped,
-                                            GrProtected) override;
+                                            skgpu::Mipmapped,
+                                            GrProtected,
+                                            std::string_view label) override;
 
     bool onClearBackendTexture(const GrBackendTexture&,
                                sk_sp<skgpu::RefCntedCallback> finishedCallback,
@@ -235,7 +253,7 @@ private:
 
     GrBackendTexture onCreateCompressedBackendTexture(SkISize dimensions,
                                                       const GrBackendFormat&,
-                                                      GrMipmapped,
+                                                      skgpu::Mipmapped,
                                                       GrProtected) override;
 
     bool onUpdateCompressedBackendTexture(const GrBackendTexture&,
@@ -261,10 +279,11 @@ private:
                                          DXGI_FORMAT,
                                          GrRenderable,
                                          int renderTargetSampleCnt,
-                                         SkBudgeted,
+                                         skgpu::Budgeted,
                                          GrProtected,
                                          int mipLevelCount,
-                                         GrMipmapStatus);
+                                         GrMipmapStatus,
+                                         std::string_view label);
 
     bool uploadToTexture(GrD3DTexture* tex,
                          SkIRect rect,
@@ -281,7 +300,7 @@ private:
                                                 SkISize dimensions,
                                                 GrTexturable texturable,
                                                 GrRenderable renderable,
-                                                GrMipmapped mipmapped,
+                                                skgpu::Mipmapped mipmapped,
                                                 int sampleCnt,
                                                 GrD3DTextureResourceInfo* info,
                                                 GrProtected isProtected);
@@ -301,7 +320,7 @@ private:
     std::unique_ptr<GrD3DDirectCommandList> fCurrentDirectCommandList;
     // One-off special-case descriptors created directly for the mipmap compute shader
     // and hence aren't tracked by the normal path.
-    SkSTArray<32, GrD3DDescriptorHeap::CPUHandle> fMipmapCPUDescriptors;
+    skia_private::STArray<32, GrD3DDescriptorHeap::CPUHandle> fMipmapCPUDescriptors;
 
     struct OutstandingCommandList {
         OutstandingCommandList(std::unique_ptr<GrD3DDirectCommandList> commandList,
@@ -316,7 +335,7 @@ private:
 
     std::unique_ptr<GrD3DOpsRenderPass> fCachedOpsRenderPass;
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
     IDXGraphicsAnalysis* fGraphicsAnalysis;
 #endif
 

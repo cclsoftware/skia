@@ -12,6 +12,7 @@
 #include "src/gpu/ganesh/GrImageInfo.h"
 #include "src/gpu/ganesh/GrPipeline.h"
 #include "src/gpu/ganesh/GrTextureProxy.h"
+#include "src/gpu/ganesh/GrUserStencilSettings.h"
 
 class GrDirectContext;
 class GrProgramInfo;
@@ -28,7 +29,7 @@ GrSurfaceProxyView MakeTextureProxyViewFromData(GrDirectContext*,
                                                 GrSurfaceOrigin,
                                                 GrCPixmap pixmap);
 
-#if SK_GPU_V1
+#if defined(SK_GANESH)
 GrProgramInfo* CreateProgramInfo(const GrCaps*,
                                  SkArenaAlloc*,
                                  const GrSurfaceProxyView& writeView,

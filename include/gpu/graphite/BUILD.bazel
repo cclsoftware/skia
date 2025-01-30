@@ -1,78 +1,28 @@
-load("//bazel:macros.bzl", "exports_files_legacy", "generated_cc_atom")
+load("//bazel:skia_rules.bzl", "skia_filegroup")
 
-exports_files_legacy()
+package(
+    default_applicable_licenses = ["//:license"],
+)
 
 licenses(["notice"])
 
-generated_cc_atom(
-    name = "BackendTexture_hdr",
-    hdrs = ["BackendTexture.h"],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":GraphiteTypes_hdr",
-        ":TextureInfo_hdr",
-        "//include/core:SkSize_hdr",
-        "//include/gpu/graphite/mtl:MtlTypes_hdr",
+skia_filegroup(
+    name = "public_hdrs",
+    srcs = [
+        "BackendSemaphore.h",
+        "BackendTexture.h",
+        "Context.h",
+        "ContextOptions.h",
+        "GraphiteTypes.h",
+        "Image.h",
+        "ImageProvider.h",
+        "LogPriority.h",
+        "PrecompileContext.h",
+        "Recorder.h",
+        "Recording.h",
+        "Surface.h",
+        "TextureInfo.h",
+        "YUVABackendTextures.h",
     ],
-)
-
-generated_cc_atom(
-    name = "Context_hdr",
-    hdrs = ["Context.h"],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":GraphiteTypes_hdr",
-        "//include/core:SkBlendMode_hdr",
-        "//include/core:SkRefCnt_hdr",
-        "//include/core:SkShader_hdr",
-        "//include/core:SkTileMode_hdr",
-        "//include/private:SkNoncopyable_hdr",
-    ],
-)
-
-generated_cc_atom(
-    name = "GraphiteTypes_hdr",
-    hdrs = ["GraphiteTypes.h"],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        "//include/core:SkTypes_hdr",
-        "//include/gpu:GpuTypes_hdr",
-    ],
-)
-
-generated_cc_atom(
-    name = "Recorder_hdr",
-    hdrs = ["Recorder.h"],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        "//include/core:SkRefCnt_hdr",
-        "//include/private:SingleOwner_hdr",
-    ],
-)
-
-generated_cc_atom(
-    name = "Recording_hdr",
-    hdrs = ["Recording.h"],
-    visibility = ["//:__subpackages__"],
-    deps = ["//include/core:SkRefCnt_hdr"],
-)
-
-generated_cc_atom(
-    name = "SkStuff_hdr",
-    hdrs = ["SkStuff.h"],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        "//include/core:SkImageInfo_hdr",
-        "//include/core:SkRefCnt_hdr",
-    ],
-)
-
-generated_cc_atom(
-    name = "TextureInfo_hdr",
-    hdrs = ["TextureInfo.h"],
-    visibility = ["//:__subpackages__"],
-    deps = [
-        ":GraphiteTypes_hdr",
-        "//include/private/gpu/graphite:MtlTypesPriv_hdr",
-    ],
+    visibility = ["//src/gpu/graphite:__subpackages__"],
 )

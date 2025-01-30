@@ -9,7 +9,7 @@
 #include "include/core/SkScalar.h"
 #include "include/core/SkSpan.h"
 #include "include/core/SkTypes.h"
-#include "include/private/SkTArray.h"
+#include "include/private/base/SkTArray.h"
 #include "modules/skparagraph/include/DartTypes.h"
 #include "modules/skparagraph/include/TextStyle.h"
 #include "modules/skshaper/include/SkShaper.h"
@@ -120,10 +120,11 @@ public:
         return SkRect::MakeXYWH(fOffset.fX, fOffset.fY, fAdvance.fX, fAdvance.fY);
     }
 
-    SkScalar addSpacesAtTheEnd(SkScalar space, Cluster* cluster);
+    void addSpacesAtTheEnd(SkScalar space, Cluster* cluster);
     SkScalar addSpacesEvenly(SkScalar space, Cluster* cluster);
     SkScalar addSpacesEvenly(SkScalar space);
     void shift(const Cluster* cluster, SkScalar offset);
+    void extend(const Cluster* cluster, SkScalar offset);
 
     SkScalar calculateHeight(LineMetricStyle ascentStyle, LineMetricStyle descentStyle) const {
         auto ascent = ascentStyle == LineMetricStyle::Typographic ? this->ascent()
@@ -143,12 +144,16 @@ public:
     void iterateThroughClusters(const ClusterVisitor& visitor);
 
     std::tuple<bool, ClusterIndex, ClusterIndex> findLimitingClusters(TextRange text) const;
+    std::tuple<bool, TextIndex, TextIndex> findLimitingGlyphClusters(TextRange text) const;
     std::tuple<bool, TextIndex, TextIndex> findLimitingGraphemes(TextRange text) const;
     SkSpan<const SkGlyphID> glyphs() const {
         return SkSpan<const SkGlyphID>(fGlyphs.begin(), fGlyphs.size());
     }
     SkSpan<const SkPoint> positions() const {
         return SkSpan<const SkPoint>(fPositions.begin(), fPositions.size());
+    }
+    SkSpan<const SkPoint> offsets() const {
+        return SkSpan<const SkPoint>(fOffsets.begin(), fOffsets.size());
     }
     SkSpan<const uint32_t> clusterIndexes() const {
         return SkSpan<const uint32_t>(fClusterIndexes.begin(), fClusterIndexes.size());
@@ -157,8 +162,10 @@ public:
     void commit() { }
 
     void resetJustificationShifts() {
-        fJustificationShifts.reset();
+        fJustificationShifts.clear();
     }
+
+    bool isResolved() const;
 private:
     friend class ParagraphImpl;
     friend class TextLine;
@@ -181,16 +188,19 @@ private:
     // These fields are not modified after shaping completes and can safely be
     // shared among copies of the run that are held by different paragraphs.
     struct GlyphData {
-        SkSTArray<64, SkGlyphID, true> glyphs;
-        SkSTArray<64, SkPoint, true> positions;
-        SkSTArray<64, uint32_t, true> clusterIndexes;
+        skia_private::STArray<64, SkGlyphID, true> glyphs;
+        skia_private::STArray<64, SkPoint, true> positions;
+        skia_private::STArray<64, SkPoint, true> offsets;
+        skia_private::STArray<64, uint32_t, true> clusterIndexes;
     };
     std::shared_ptr<GlyphData> fGlyphData;
-    SkSTArray<64, SkGlyphID, true>& fGlyphs;
-    SkSTArray<64, SkPoint, true>& fPositions;
-    SkSTArray<64, uint32_t, true>& fClusterIndexes;
+    skia_private::STArray<64, SkGlyphID, true>& fGlyphs;
+    skia_private::STArray<64, SkPoint, true>& fPositions;
+    skia_private::STArray<64, SkPoint, true>& fOffsets;
+    skia_private::STArray<64, uint32_t, true>& fClusterIndexes;
 
-    SkSTArray<64, SkPoint, true> fJustificationShifts; // For justification (current and prev shifts)
+    skia_private::STArray<64, SkPoint, true> fJustificationShifts; // For justification
+                                                                   // (current and prev shifts)
 
     SkFontMetrics fFontMetrics;
     const SkScalar fHeightMultiplier;
@@ -288,7 +298,7 @@ public:
 
     size_t roundPos(SkScalar s) const;
 
-    void space(SkScalar shift, SkScalar space) {
+    void space(SkScalar shift) {
         fWidth += shift;
     }
 
@@ -298,6 +308,7 @@ public:
     bool isWhitespaceBreak() const { return fIsWhiteSpaceBreak; }
     bool isIntraWordBreak() const { return fIsIntraWordBreak; }
     bool isHardBreak() const { return fIsHardBreak; }
+    bool isIdeographic() const { return fIsIdeographic; }
 
     bool isSoftBreak() const;
     bool isGraphemeBreak() const;
@@ -350,6 +361,7 @@ private:
     bool fIsWhiteSpaceBreak;
     bool fIsIntraWordBreak;
     bool fIsHardBreak;
+    bool fIsIdeographic;
 };
 
 class InternalLineMetrics {
@@ -426,6 +438,15 @@ public:
         fRawAscent = SK_ScalarMax;
         fRawDescent = SK_ScalarMin;
         fRawLeading = 0;
+    }
+
+    bool isClean() {
+        return (fAscent == SK_ScalarMax &&
+                fDescent == SK_ScalarMin &&
+                fLeading == 0 &&
+                fRawAscent == SK_ScalarMax &&
+                fRawDescent == SK_ScalarMin &&
+                fRawLeading == 0);
     }
 
     SkScalar delta() const { return height() - ideographicBaseline(); }

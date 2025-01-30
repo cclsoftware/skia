@@ -1,4 +1,3 @@
-
 /*
  * Copyright 2020 Google LLC
  *
@@ -11,8 +10,11 @@
 
 #include "src/gpu/ganesh/GrCaps.h"
 
-#include "include/gpu/d3d/GrD3DTypes.h"
+#include "include/gpu/ganesh/d3d/GrD3DTypes.h"
+#include "include/private/base/SkTDArray.h"
 #include "src/gpu/ganesh/d3d/GrD3DAttachment.h"
+
+enum class SkTextureCompressionType;
 
 /**
  * Stores some capabilities of a D3D backend.
@@ -83,7 +85,7 @@ public:
     bool canCopyAsResolve(DXGI_FORMAT dstFormat, int dstSampleCnt,
                           DXGI_FORMAT srcFormat, int srcSamplecnt) const;
 
-    GrBackendFormat getBackendFormatFromCompressionType(SkImage::CompressionType) const override;
+    GrBackendFormat getBackendFormatFromCompressionType(SkTextureCompressionType) const override;
 
     DXGI_FORMAT getFormatFromColorType(GrColorType colorType) const {
         int idx = static_cast<int>(colorType);
@@ -105,8 +107,8 @@ public:
     bool resolveSubresourceRegionSupport() const { return fResolveSubresourceRegionSupport; }
     bool standardSwizzleLayoutSupport() const { return fStandardSwizzleLayoutSupport; }
 
-#if GR_TEST_UTILS
-    std::vector<TestFormatColorTypeCombination> getTestingCombinations() const override;
+#if defined(GPU_TEST_UTILS)
+    std::vector<GrTest::TestFormatColorTypeCombination> getTestingCombinations() const override;
 #endif
 
 private:
@@ -131,8 +133,8 @@ private:
     void applyDriverCorrectnessWorkarounds(int vendorID);
 
     bool onSurfaceSupportsWritePixels(const GrSurface*) const override;
-    bool onCanCopySurface(const GrSurfaceProxy* dst, const GrSurfaceProxy* src,
-                          const SkIRect& srcRect, const SkIPoint& dstPoint) const override;
+    bool onCanCopySurface(const GrSurfaceProxy* dst, const SkIRect& dstRect,
+                          const GrSurfaceProxy* src, const SkIRect& srcRect) const override;
     GrBackendFormat onGetDefaultBackendFormat(GrColorType) const override;
 
     bool onAreColorTypeAndFormatCompatible(GrColorType, const GrBackendFormat&) const override;
@@ -194,7 +196,7 @@ private:
         std::unique_ptr<ColorTypeInfo[]> fColorTypeInfos;
         int fColorTypeInfoCount = 0;
     };
-    static const size_t kNumDxgiFormats = 15;
+    static constexpr size_t kNumDxgiFormats = 15;
     FormatInfo fFormatTable[kNumDxgiFormats];
 
     FormatInfo& getFormatInfo(DXGI_FORMAT);

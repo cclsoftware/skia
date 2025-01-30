@@ -8,13 +8,14 @@
 #include "include/android/SkAnimatedImage.h"
 #include "include/codec/SkAndroidCodec.h"
 #include "include/codec/SkCodec.h"
+#include "include/codec/SkEncodedImageFormat.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPicture.h"
 #include "include/core/SkPictureRecorder.h"
 #include "include/core/SkPixelRef.h"
 #include "src/codec/SkCodecPriv.h"
+#include "src/codec/SkPixmapUtilsPriv.h"
 #include "src/core/SkImagePriv.h"
-#include "src/core/SkPixmapPriv.h"
 
 #include <limits.h>
 #include <utility>
@@ -80,7 +81,7 @@ SkAnimatedImage::SkAnimatedImage(std::unique_ptr<SkAndroidCodec> codec,
         if (SkEncodedOriginSwapsWidthHeight(origin)) {
             // The client asked for sizes post-rotation. Swap back to the pre-rotation sizes to pass
             // to fCodec and for the scale matrix computation.
-            fDecodeInfo = SkPixmapPriv::SwapWidthHeight(fDecodeInfo);
+            fDecodeInfo = SkPixmapUtils::SwapWidthHeight(fDecodeInfo);
             scaledSize = { scaledSize.height(), scaledSize.width() };
         }
     }
@@ -336,7 +337,7 @@ void SkAnimatedImage::onDraw(SkCanvas* canvas) {
     auto image = this->getCurrentFrameSimple();
 
     if (this->simple()) {
-        canvas->drawImage(image, 0, 0);
+        canvas->drawImage(image, 0, 0, SkSamplingOptions(fFilterMode), nullptr);
         return;
     }
 
@@ -348,7 +349,7 @@ void SkAnimatedImage::onDraw(SkCanvas* canvas) {
     {
         SkAutoCanvasRestore acr(canvas, fPostProcess != nullptr);
         canvas->concat(fMatrix);
-        canvas->drawImage(image, 0, 0, SkSamplingOptions(SkFilterMode::kLinear), nullptr);
+        canvas->drawImage(image, 0, 0, SkSamplingOptions(fFilterMode), nullptr);
     }
     if (fPostProcess) {
         canvas->drawPicture(fPostProcess);
@@ -385,4 +386,8 @@ sk_sp<SkImage> SkAnimatedImage::getCurrentFrame() {
     SkCanvas canvas(dst);
     this->draw(&canvas);
     return SkMakeImageFromRasterBitmap(dst, kNever_SkCopyPixelsMode);
+}
+
+void SkAnimatedImage::setFilterMode(SkFilterMode filterMode) {
+    fFilterMode = filterMode;
 }

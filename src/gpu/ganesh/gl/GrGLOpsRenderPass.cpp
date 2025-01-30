@@ -4,16 +4,31 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/gl/GrGLOpsRenderPass.h"
 
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/gl/GrGLFunctions.h"
+#include "include/gpu/ganesh/gl/GrGLInterface.h"
+#include "include/gpu/ganesh/gl/GrGLTypes.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/ganesh/GrBuffer.h"
+#include "src/gpu/ganesh/GrCaps.h"
+#include "src/gpu/ganesh/GrCpuBuffer.h"
+#include "src/gpu/ganesh/GrDirectContextPriv.h"
+#include "src/gpu/ganesh/GrDrawIndirectCommand.h"
+#include "src/gpu/ganesh/GrGpuBuffer.h"
 #include "src/gpu/ganesh/GrProgramInfo.h"
 #include "src/gpu/ganesh/GrRenderTarget.h"
+#include "src/gpu/ganesh/gl/GrGLCaps.h"
+#include "src/gpu/ganesh/gl/GrGLDefines.h"
+#include "src/gpu/ganesh/gl/GrGLProgram.h"
+#include "src/gpu/ganesh/gl/GrGLRenderTarget.h"
+#include "src/gpu/ganesh/gl/GrGLUtil.h"
+#include "src/gpu/ganesh/gl/GrGLVertexArray.h"
 
-#ifdef SK_DEBUG
-#include "include/gpu/GrDirectContext.h"
-#include "src/gpu/ganesh/GrDirectContextPriv.h"
-#endif
+#include <algorithm>
+#include <utility>
 
 #define GL_CALL(X) GR_GL_CALL(fGpu->glInterface(), X)
 
@@ -186,6 +201,7 @@ void GrGLOpsRenderPass::onDraw(int vertexCount, int baseVertex) {
         baseVertex = 0;
     }
     GL_CALL(DrawArrays(glPrimType, baseVertex, vertexCount));
+    fGpu->didDrawTo(fRenderTarget);
 }
 
 void GrGLOpsRenderPass::onDrawIndexed(int indexCount, int baseIndex, uint16_t minIndexValue,
@@ -211,6 +227,7 @@ void GrGLOpsRenderPass::onDrawIndexed(int indexCount, int baseIndex, uint16_t mi
         GL_CALL(DrawElements(glPrimType, indexCount, GR_GL_UNSIGNED_SHORT,
                              this->offsetForBaseIndex(baseIndex)));
     }
+    fGpu->didDrawTo(fRenderTarget);
 }
 
 void GrGLOpsRenderPass::onDrawInstanced(int instanceCount, int baseInstance, int vertexCount,
@@ -235,6 +252,7 @@ void GrGLOpsRenderPass::onDrawInstanced(int instanceCount, int baseInstance, int
             GL_CALL(DrawArraysInstanced(glPrimType, baseVertex, vertexCount, instanceCountForDraw));
         }
     }
+    fGpu->didDrawTo(fRenderTarget);
 }
 
 void GrGLOpsRenderPass::onDrawIndexedInstanced(int indexCount, int baseIndex, int instanceCount,
@@ -258,6 +276,7 @@ void GrGLOpsRenderPass::onDrawIndexedInstanced(int indexCount, int baseIndex, in
                                         this->offsetForBaseIndex(baseIndex), instanceCountForDraw));
         }
     }
+    fGpu->didDrawTo(fRenderTarget);
 }
 
 static const void* buffer_offset_to_gl_address(const GrBuffer* drawIndirectBuffer, size_t offset) {
@@ -304,6 +323,7 @@ void GrGLOpsRenderPass::onDrawIndirect(const GrBuffer* drawIndirectBuffer, size_
                                    buffer_offset_to_gl_address(drawIndirectBuffer, offset)));
         offset += sizeof(GrDrawIndirectCommand);
     }
+    fGpu->didDrawTo(fRenderTarget);
 }
 
 void GrGLOpsRenderPass::multiDrawArraysANGLEOrWebGL(const GrBuffer* drawIndirectBuffer,
@@ -341,6 +361,7 @@ void GrGLOpsRenderPass::multiDrawArraysANGLEOrWebGL(const GrBuffer* drawIndirect
         drawCount -= countInBatch;
         cmds += countInBatch;
     }
+    fGpu->didDrawTo(fRenderTarget);
 }
 
 void GrGLOpsRenderPass::onDrawIndexedIndirect(const GrBuffer* drawIndirectBuffer, size_t offset,
@@ -376,6 +397,7 @@ void GrGLOpsRenderPass::onDrawIndexedIndirect(const GrBuffer* drawIndirectBuffer
                                      buffer_offset_to_gl_address(drawIndirectBuffer, offset)));
         offset += sizeof(GrDrawIndexedIndirectCommand);
     }
+    fGpu->didDrawTo(fRenderTarget);
 }
 
 void GrGLOpsRenderPass::multiDrawElementsANGLEOrWebGL(const GrBuffer* drawIndirectBuffer,
@@ -419,6 +441,7 @@ void GrGLOpsRenderPass::multiDrawElementsANGLEOrWebGL(const GrBuffer* drawIndire
         drawCount -= countInBatch;
         cmds += countInBatch;
     }
+    fGpu->didDrawTo(fRenderTarget);
 }
 
 void GrGLOpsRenderPass::onClear(const GrScissorState& scissor, std::array<float, 4> color) {

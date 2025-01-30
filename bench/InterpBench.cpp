@@ -10,8 +10,8 @@
 #include "include/core/SkPaint.h"
 #include "include/core/SkString.h"
 #include "include/private/SkColorData.h"
-#include "include/private/SkFixed.h"
-#include "include/utils/SkRandom.h"
+#include "include/private/base/SkFixed.h"
+#include "src/base/SkRandom.h"
 
 #define TILE(x, width)  (((x) & 0xFFFF) * width >> 16)
 
@@ -31,7 +31,7 @@ public:
     }
 
     bool isSuitableFor(Backend backend) override {
-        return backend == kNonRendering_Backend;
+        return backend == Backend::kNonRendering;
     }
 
     virtual void performTest(int16_t dst[], float x, float dx, int count) = 0;

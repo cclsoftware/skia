@@ -4,72 +4,95 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/GrRecordingContextPriv.h"
 
+#include "include/core/SkAlphaType.h"
 #include "include/core/SkColorSpace.h"
+#include "include/core/SkSize.h"
+#include "include/core/SkSurfaceProps.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrContextOptions.h"
+#include "include/private/gpu/ganesh/GrContext_Base.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
+#include "src/gpu/RefCntedCallback.h"
+#include "src/gpu/Swizzle.h"
+#include "src/gpu/ganesh/Device.h"
 #include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrDrawingManager.h"
+#include "src/gpu/ganesh/GrImageInfo.h"
 #include "src/gpu/ganesh/GrProxyProvider.h"
-#include "src/gpu/ganesh/GrRenderTargetProxy.h"
+#include "src/gpu/ganesh/GrShaderCaps.h"
+#include "src/gpu/ganesh/GrSurfaceProxy.h"
 #include "src/gpu/ganesh/GrSurfaceProxyView.h"
+#include "src/gpu/ganesh/GrTextureProxy.h"
+#include "src/gpu/ganesh/SurfaceContext.h"
+#include "src/gpu/ganesh/SurfaceDrawContext.h"
+#include "src/gpu/ganesh/SurfaceFillContext.h"
 
-#if SK_GPU_V1
-#include "src/gpu/ganesh/v1/Device_v1.h"
-#include "src/gpu/ganesh/v1/SurfaceDrawContext_v1.h"
-#include "src/gpu/ganesh/v1/SurfaceFillContext_v1.h"
-#endif
+#include <utility>
 
 void GrRecordingContextPriv::addOnFlushCallbackObject(GrOnFlushCallbackObject* onFlushCBObject) {
     this->context()->addOnFlushCallbackObject(onFlushCBObject);
 }
 
-sk_sp<skgpu::BaseDevice> GrRecordingContextPriv::createDevice(GrColorType colorType,
-                                                              sk_sp<GrSurfaceProxy> proxy,
-                                                              sk_sp<SkColorSpace> colorSpace,
-                                                              GrSurfaceOrigin origin,
-                                                              const SkSurfaceProps& props,
-                                                              skgpu::BaseDevice::InitContents init) {
-#if SK_GPU_V1
-    return skgpu::v1::Device::Make(this->context(), colorType, std::move(proxy),
-                                   std::move(colorSpace), origin, props, init);
-#else
-    return nullptr;
-#endif
+sk_sp<skgpu::ganesh::Device> GrRecordingContextPriv::createDevice(
+        GrColorType colorType,
+        sk_sp<GrSurfaceProxy> proxy,
+        sk_sp<SkColorSpace> colorSpace,
+        GrSurfaceOrigin origin,
+        const SkSurfaceProps& props,
+        skgpu::ganesh::Device::InitContents init) {
+    return skgpu::ganesh::Device::Make(this->context(),
+                                       colorType,
+                                       std::move(proxy),
+                                       std::move(colorSpace),
+                                       origin,
+                                       props,
+                                       init);
 }
 
-sk_sp<skgpu::BaseDevice> GrRecordingContextPriv::createDevice(SkBudgeted budgeted,
-                                                              const SkImageInfo& ii,
-                                                              SkBackingFit fit,
-                                                              int sampleCount,
-                                                              GrMipmapped mipmapped,
-                                                              GrProtected isProtected,
-                                                              GrSurfaceOrigin origin,
-                                                              const SkSurfaceProps& props,
-                                                              skgpu::BaseDevice::InitContents init) {
-#if SK_GPU_V1
-    return skgpu::v1::Device::Make(this->context(), budgeted, ii, fit, sampleCount,
-                                   mipmapped, isProtected, origin, props, init);
-#else
-    return nullptr;
-#endif
+sk_sp<skgpu::ganesh::Device> GrRecordingContextPriv::createDevice(
+        skgpu::Budgeted budgeted,
+        const SkImageInfo& ii,
+        SkBackingFit fit,
+        int sampleCount,
+        skgpu::Mipmapped mipmapped,
+        GrProtected isProtected,
+        GrSurfaceOrigin origin,
+        const SkSurfaceProps& props,
+        skgpu::ganesh::Device::InitContents init) {
+    return skgpu::ganesh::Device::Make(this->context(),
+                                       budgeted,
+                                       ii,
+                                       fit,
+                                       sampleCount,
+                                       mipmapped,
+                                       isProtected,
+                                       origin,
+                                       props,
+                                       init);
 }
 
-void GrRecordingContextPriv::moveRenderTasksToDDL(SkDeferredDisplayList* ddl) {
+void GrRecordingContextPriv::moveRenderTasksToDDL(GrDeferredDisplayList* ddl) {
     this->context()->drawingManager()->moveRenderTasksToDDL(ddl);
 }
 
-GrSDFTControl GrRecordingContextPriv::getSDFTControl(bool useSDFTForSmallText) const {
-    return GrSDFTControl{
+sktext::gpu::SubRunControl GrRecordingContextPriv::getSubRunControl(
+        bool useSDFTForSmallText) const {
+#if !defined(SK_DISABLE_SDF_TEXT)
+    return sktext::gpu::SubRunControl{
             this->caps()->shaderCaps()->supportsDistanceFieldText(),
             useSDFTForSmallText,
+            !this->caps()->disablePerspectiveSDFText(),
             this->options().fMinDistanceFieldFontSize,
             this->options().fGlyphsAsPathsFontSize};
+#else
+    return sktext::gpu::SubRunControl{};
+#endif
 }
 
-std::unique_ptr<skgpu::SurfaceContext> GrRecordingContextPriv::makeSC(GrSurfaceProxyView readView,
-                                                                      const GrColorInfo& info) {
-#if SK_GPU_V1
+std::unique_ptr<skgpu::ganesh::SurfaceContext> GrRecordingContextPriv::makeSC(
+        GrSurfaceProxyView readView, const GrColorInfo& info) {
     // It is probably not necessary to check if the context is abandoned here since uses of the
     // SurfaceContext which need the context will mostly likely fail later on w/o an issue.
     // However having this here adds some reassurance in case there is a path that doesn't
@@ -80,7 +103,7 @@ std::unique_ptr<skgpu::SurfaceContext> GrRecordingContextPriv::makeSC(GrSurfaceP
     GrSurfaceProxy* proxy = readView.proxy();
     SkASSERT(proxy && proxy->asTextureProxy());
 
-    std::unique_ptr<skgpu::SurfaceContext> sc;
+    std::unique_ptr<skgpu::ganesh::SurfaceContext> sc;
     if (proxy->asRenderTargetProxy()) {
         // Will we ever want a swizzle that is not the default write swizzle for the format and
         // colorType here? If so we will need to manually pass that in.
@@ -92,50 +115,49 @@ std::unique_ptr<skgpu::SurfaceContext> GrRecordingContextPriv::makeSC(GrSurfaceP
         GrSurfaceProxyView writeView(readView.refProxy(), readView.origin(), writeSwizzle);
         if (info.alphaType() == kPremul_SkAlphaType ||
             info.alphaType() == kOpaque_SkAlphaType) {
-            sc = std::make_unique<skgpu::v1::SurfaceDrawContext>(this->context(),
-                                                                 std::move(readView),
-                                                                 std::move(writeView),
-                                                                 info.colorType(),
-                                                                 info.refColorSpace(),
-                                                                 SkSurfaceProps());
+            sc = std::make_unique<skgpu::ganesh::SurfaceDrawContext>(this->context(),
+                                                                     std::move(readView),
+                                                                     std::move(writeView),
+                                                                     info.colorType(),
+                                                                     info.refColorSpace(),
+                                                                     SkSurfaceProps());
         } else {
-            sc = std::make_unique<skgpu::v1::SurfaceFillContext>(this->context(),
-                                                                 std::move(readView),
-                                                                 std::move(writeView),
-                                                                 info);
+            sc = std::make_unique<skgpu::ganesh::SurfaceFillContext>(
+                    this->context(), std::move(readView), std::move(writeView), info);
         }
     } else {
-        sc = std::make_unique<skgpu::SurfaceContext>(this->context(),
-                                                     std::move(readView),
-                                                     info);
+        sc = std::make_unique<skgpu::ganesh::SurfaceContext>(
+                this->context(), std::move(readView), info);
     }
     SkDEBUGCODE(sc->validate();)
     return sc;
-#endif
-    return nullptr;
 }
 
-std::unique_ptr<skgpu::SurfaceContext> GrRecordingContextPriv::makeSC(const GrImageInfo& info,
-                                                                      const GrBackendFormat& format,
-                                                                      SkBackingFit fit,
-                                                                      GrSurfaceOrigin origin,
-                                                                      GrRenderable renderable,
-                                                                      int sampleCount,
-                                                                      GrMipmapped mipmapped,
-                                                                      GrProtected isProtected,
-                                                                      SkBudgeted budgeted) {
+std::unique_ptr<skgpu::ganesh::SurfaceContext> GrRecordingContextPriv::makeSC(
+        const GrImageInfo& info,
+        const GrBackendFormat& format,
+        std::string_view label,
+        SkBackingFit fit,
+        GrSurfaceOrigin origin,
+        GrRenderable renderable,
+        int sampleCount,
+        skgpu::Mipmapped mipmapped,
+        GrProtected isProtected,
+        skgpu::Budgeted budgeted) {
     SkASSERT(renderable == GrRenderable::kYes || sampleCount == 1);
     if (this->abandoned()) {
         return nullptr;
     }
-    sk_sp<GrTextureProxy> proxy = this->proxyProvider()->createProxy(format,
-                                                                     info.dimensions(),
-                                                                     renderable,
-                                                                     sampleCount,
-                                                                     mipmapped,
-                                                                     fit,
-                                                                     budgeted,
-                                                                     isProtected);
+    sk_sp<GrTextureProxy> proxy =
+            this->proxyProvider()->createProxy(format,
+                                               info.dimensions(),
+                                               renderable,
+                                               sampleCount,
+                                               mipmapped,
+                                               fit,
+                                               budgeted,
+                                               isProtected,
+                                               label);
     if (!proxy) {
         return nullptr;
     }
@@ -150,38 +172,41 @@ std::unique_ptr<skgpu::SurfaceContext> GrRecordingContextPriv::makeSC(const GrIm
     return this->makeSC(std::move(view), info.colorInfo());
 }
 
-std::unique_ptr<skgpu::SurfaceFillContext> GrRecordingContextPriv::makeSFC(GrImageInfo info,
-                                                                           SkBackingFit fit,
-                                                                           int sampleCount,
-                                                                           GrMipmapped mipmapped,
-                                                                           GrProtected isProtected,
-                                                                           GrSurfaceOrigin origin,
-                                                                           SkBudgeted budgeted) {
-
-#if SK_GPU_V1
+std::unique_ptr<skgpu::ganesh::SurfaceFillContext> GrRecordingContextPriv::makeSFC(
+        GrImageInfo info,
+        std::string_view label,
+        SkBackingFit fit,
+        int sampleCount,
+        skgpu::Mipmapped mipmapped,
+        GrProtected isProtected,
+        GrSurfaceOrigin origin,
+        skgpu::Budgeted budgeted) {
     if (info.alphaType() == kPremul_SkAlphaType || info.alphaType() == kOpaque_SkAlphaType) {
-        return skgpu::v1::SurfaceDrawContext::Make(this->context(),
-                                                   info.colorType(),
-                                                   info.refColorSpace(),
-                                                   fit,
-                                                   info.dimensions(),
-                                                   SkSurfaceProps(),
-                                                   sampleCount,
-                                                   mipmapped,
-                                                   isProtected,
-                                                   origin,
-                                                   budgeted);
+        return skgpu::ganesh::SurfaceDrawContext::Make(this->context(),
+                                                       info.colorType(),
+                                                       info.refColorSpace(),
+                                                       fit,
+                                                       info.dimensions(),
+                                                       SkSurfaceProps(),
+                                                       label,
+                                                       sampleCount,
+                                                       mipmapped,
+                                                       isProtected,
+                                                       origin,
+                                                       budgeted);
     }
     GrBackendFormat format = this->caps()->getDefaultBackendFormat(info.colorType(),
                                                                    GrRenderable::kYes);
-    sk_sp<GrTextureProxy> proxy = this->proxyProvider()->createProxy(format,
-                                                                     info.dimensions(),
-                                                                     GrRenderable::kYes,
-                                                                     sampleCount,
-                                                                     mipmapped,
-                                                                     fit,
-                                                                     budgeted,
-                                                                     isProtected);
+    sk_sp<GrTextureProxy> proxy =
+            this->proxyProvider()->createProxy(format,
+                                               info.dimensions(),
+                                               GrRenderable::kYes,
+                                               sampleCount,
+                                               mipmapped,
+                                               fit,
+                                               budgeted,
+                                               isProtected,
+                                               label);
     if (!proxy) {
         return nullptr;
     }
@@ -190,100 +215,90 @@ std::unique_ptr<skgpu::SurfaceFillContext> GrRecordingContextPriv::makeSFC(GrIma
 
     GrSurfaceProxyView readView(            proxy, origin,  readSwizzle);
     GrSurfaceProxyView writeView(std::move(proxy), origin, writeSwizzle);
-    std::unique_ptr<skgpu::SurfaceFillContext> sfc;
-    sfc = std::make_unique<skgpu::v1::SurfaceFillContext>(this->context(),
-                                                          std::move(readView),
-                                                          std::move(writeView),
-                                                          info.colorInfo());
+    std::unique_ptr<skgpu::ganesh::SurfaceFillContext> sfc;
+    sfc = std::make_unique<skgpu::ganesh::SurfaceFillContext>(
+            this->context(), std::move(readView), std::move(writeView), info.colorInfo());
     sfc->discard();
     return sfc;
-#endif
-
-    return nullptr;
 }
 
-std::unique_ptr<skgpu::SurfaceFillContext> GrRecordingContextPriv::makeSFC(
+std::unique_ptr<skgpu::ganesh::SurfaceFillContext> GrRecordingContextPriv::makeSFC(
         SkAlphaType alphaType,
         sk_sp<SkColorSpace> colorSpace,
         SkISize dimensions,
         SkBackingFit fit,
         const GrBackendFormat& format,
         int sampleCount,
-        GrMipmapped mipmapped,
+        skgpu::Mipmapped mipmapped,
         GrProtected isProtected,
         skgpu::Swizzle readSwizzle,
         skgpu::Swizzle writeSwizzle,
         GrSurfaceOrigin origin,
-        SkBudgeted budgeted) {
-
-#if SK_GPU_V1
+        skgpu::Budgeted budgeted,
+        std::string_view label) {
     SkASSERT(!dimensions.isEmpty());
     SkASSERT(sampleCount >= 1);
     SkASSERT(format.isValid() && format.backend() == fContext->backend());
     if (alphaType == kPremul_SkAlphaType || alphaType == kOpaque_SkAlphaType) {
-        return skgpu::v1::SurfaceDrawContext::Make(this->context(),
-                                                   std::move(colorSpace),
-                                                   fit,
-                                                   dimensions,
-                                                   format,
-                                                   sampleCount,
-                                                   mipmapped,
-                                                   isProtected,
-                                                   readSwizzle,
-                                                   writeSwizzle,
-                                                   origin,
-                                                   budgeted,
-                                                   SkSurfaceProps());
+        return skgpu::ganesh::SurfaceDrawContext::Make(this->context(),
+                                                       std::move(colorSpace),
+                                                       fit,
+                                                       dimensions,
+                                                       format,
+                                                       sampleCount,
+                                                       mipmapped,
+                                                       isProtected,
+                                                       readSwizzle,
+                                                       writeSwizzle,
+                                                       origin,
+                                                       budgeted,
+                                                       SkSurfaceProps(),
+                                                       label);
     }
 
-    sk_sp<GrTextureProxy> proxy = this->proxyProvider()->createProxy(format,
-                                                                     dimensions,
-                                                                     GrRenderable::kYes,
-                                                                     sampleCount,
-                                                                     mipmapped,
-                                                                     fit,
-                                                                     budgeted,
-                                                                     isProtected);
+    sk_sp<GrTextureProxy> proxy =
+            this->proxyProvider()->createProxy(format,
+                                               dimensions,
+                                               GrRenderable::kYes,
+                                               sampleCount,
+                                               mipmapped,
+                                               fit,
+                                               budgeted,
+                                               isProtected,
+                                               label);
     if (!proxy) {
         return nullptr;
     }
     GrImageInfo info(GrColorType::kUnknown, alphaType, std::move(colorSpace), dimensions);
     GrSurfaceProxyView readView(            proxy, origin,  readSwizzle);
     GrSurfaceProxyView writeView(std::move(proxy), origin, writeSwizzle);
-    std::unique_ptr<skgpu::SurfaceFillContext> sfc;
-    sfc = std::make_unique<skgpu::v1::SurfaceFillContext>(this->context(),
-                                                          std::move(readView),
-                                                          std::move(writeView),
-                                                          info.colorInfo());
+    std::unique_ptr<skgpu::ganesh::SurfaceFillContext> sfc;
+    sfc = std::make_unique<skgpu::ganesh::SurfaceFillContext>(
+            this->context(), std::move(readView), std::move(writeView), info.colorInfo());
     sfc->discard();
     return sfc;
-#endif
-
-    return nullptr;
 }
 
-std::unique_ptr<skgpu::SurfaceFillContext> GrRecordingContextPriv::makeSFCWithFallback(
+std::unique_ptr<skgpu::ganesh::SurfaceFillContext> GrRecordingContextPriv::makeSFCWithFallback(
         GrImageInfo info,
         SkBackingFit fit,
         int sampleCount,
-        GrMipmapped mipmapped,
+        skgpu::Mipmapped mipmapped,
         GrProtected isProtected,
         GrSurfaceOrigin origin,
-        SkBudgeted budgeted) {
-
-#if SK_GPU_V1
+        skgpu::Budgeted budgeted) {
     if (info.alphaType() == kPremul_SkAlphaType || info.alphaType() == kOpaque_SkAlphaType) {
-        return skgpu::v1::SurfaceDrawContext::MakeWithFallback(this->context(),
-                                                               info.colorType(),
-                                                               info.refColorSpace(),
-                                                               fit,
-                                                               info.dimensions(),
-                                                               SkSurfaceProps(),
-                                                               sampleCount,
-                                                               mipmapped,
-                                                               isProtected,
-                                                               origin,
-                                                               budgeted);
+        return skgpu::ganesh::SurfaceDrawContext::MakeWithFallback(this->context(),
+                                                                   info.colorType(),
+                                                                   info.refColorSpace(),
+                                                                   fit,
+                                                                   info.dimensions(),
+                                                                   SkSurfaceProps(),
+                                                                   sampleCount,
+                                                                   mipmapped,
+                                                                   isProtected,
+                                                                   origin,
+                                                                   budgeted);
     }
     const GrCaps* caps = this->caps();
 
@@ -292,37 +307,32 @@ std::unique_ptr<skgpu::SurfaceFillContext> GrRecordingContextPriv::makeSFCWithFa
         return nullptr;
     }
     info = info.makeColorType(ct);
-    return this->makeSFC(info,
+    return this->makeSFC(info, "MakeSurfaceContextWithFallback",
                          fit,
                          sampleCount,
                          mipmapped,
                          isProtected,
                          origin,
                          budgeted);
-#endif
-
-    return nullptr;
 }
 
-std::unique_ptr<skgpu::SurfaceFillContext> GrRecordingContextPriv::makeSFCFromBackendTexture(
-        GrColorInfo info,
-        const GrBackendTexture& tex,
-        int sampleCount,
-        GrSurfaceOrigin origin,
-        sk_sp<skgpu::RefCntedCallback> releaseHelper) {
-
-#if SK_GPU_V1
+std::unique_ptr<skgpu::ganesh::SurfaceFillContext>
+GrRecordingContextPriv::makeSFCFromBackendTexture(GrColorInfo info,
+                                                  const GrBackendTexture& tex,
+                                                  int sampleCount,
+                                                  GrSurfaceOrigin origin,
+                                                  sk_sp<skgpu::RefCntedCallback> releaseHelper) {
     SkASSERT(sampleCount > 0);
 
     if (info.alphaType() == kPremul_SkAlphaType || info.alphaType() == kOpaque_SkAlphaType) {
-        return skgpu::v1::SurfaceDrawContext::MakeFromBackendTexture(this->context(),
-                                                                     info.colorType(),
-                                                                     info.refColorSpace(),
-                                                                     tex,
-                                                                     sampleCount,
-                                                                     origin,
-                                                                     SkSurfaceProps(),
-                                                                     std::move(releaseHelper));
+        return skgpu::ganesh::SurfaceDrawContext::MakeFromBackendTexture(this->context(),
+                                                                         info.colorType(),
+                                                                         info.refColorSpace(),
+                                                                         tex,
+                                                                         sampleCount,
+                                                                         origin,
+                                                                         SkSurfaceProps(),
+                                                                         std::move(releaseHelper));
     }
 
     if (info.colorType() == GrColorType::kUnknown) {
@@ -346,11 +356,6 @@ std::unique_ptr<skgpu::SurfaceFillContext> GrRecordingContextPriv::makeSFCFromBa
     GrSurfaceProxyView readView(            proxy, origin,  readSwizzle);
     GrSurfaceProxyView writeView(std::move(proxy), origin, writeSwizzle);
 
-    return std::make_unique<skgpu::v1::SurfaceFillContext>(this->context(),
-                                                           std::move(readView),
-                                                           std::move(writeView),
-                                                           std::move(info));
-#endif
-
-    return nullptr;
+    return std::make_unique<skgpu::ganesh::SurfaceFillContext>(
+            this->context(), std::move(readView), std::move(writeView), std::move(info));
 }

@@ -4,19 +4,40 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #ifndef AtlasRenderTask_DEFINED
 #define AtlasRenderTask_DEFINED
 
 #include "include/core/SkPath.h"
-#include "src/core/SkTBlockList.h"
+#include "include/core/SkRefCnt.h"
+#include "include/private/SkColorData.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkNoncopyable.h"
+#include "src/base/SkBlockAllocator.h"
+#include "src/base/SkTBlockList.h"
+#include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrDynamicAtlas.h"
+#include "src/gpu/ganesh/GrSurfaceProxyView.h"
+#include "src/gpu/ganesh/GrTexture.h"
+#include "src/gpu/ganesh/ops/GrOp.h"
 #include "src/gpu/ganesh/ops/OpsTask.h"
-#include "src/gpu/ganesh/ops/PathTessellator.h"
+#include "src/gpu/ganesh/tessellate/PathTessellator.h"
 
+#include <memory>
+#include <utility>
+
+class GrArenas;
+class GrOnFlushResourceProvider;
+class GrOpFlushState;
+class GrRecordingContext;
+class GrTextureProxy;
+class SkMatrix;
+struct GrUserStencilSettings;
 struct SkIPoint16;
+struct SkIPoint;
+struct SkIRect;
+struct SkRect;
 
-namespace skgpu::v1 {
+namespace skgpu::ganesh {
 
 // Represents a GrRenderTask that draws paths into an atlas. This task gets added the DAG and left
 // open, lays out its atlas while future tasks call addPath(), and finally adds its internal draw
@@ -24,7 +45,7 @@ namespace skgpu::v1 {
 //
 // The atlas texture does not get instantiated automatically. It is the creator's responsibility to
 // call instantiate() at flush time.
-class AtlasRenderTask : public OpsTask {
+class AtlasRenderTask final : public OpsTask {
 public:
     AtlasRenderTask(GrRecordingContext*,
                     sk_sp<GrArenas>,
@@ -41,10 +62,10 @@ public:
 
     // Must be called at flush time. The texture proxy is instantiated with 'backingTexture', if
     // provided. See GrDynamicAtlas.
-    void instantiate(GrOnFlushResourceProvider* onFlushRP,
-                     sk_sp<GrTexture> backingTexture = nullptr) {
+    [[nodiscard]] bool instantiate(GrOnFlushResourceProvider* onFlushRP,
+                                   sk_sp<GrTexture> backingTexture = nullptr) {
         SkASSERT(this->isClosed());
-        fDynamicAtlas->instantiate(onFlushRP, std::move(backingTexture));
+        return fDynamicAtlas->instantiate(onFlushRP, std::move(backingTexture));
     }
 
 private:
@@ -91,6 +112,6 @@ private:
     AtlasPathList fEvenOddPathList;
 };
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh
 
 #endif // AtlasRenderTask_DEFINED

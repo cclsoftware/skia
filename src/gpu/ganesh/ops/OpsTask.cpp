@@ -4,26 +4,47 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/ops/OpsTask.h"
 
-#include "include/gpu/GrRecordingContext.h"
+#include "include/core/SkSize.h"
+#include "include/core/SkString.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
+#include "include/private/base/SkPoint_impl.h"
+#include "src/base/SkArenaAlloc.h"
+#include "src/base/SkScopeExit.h"
 #include "src/core/SkRectPriv.h"
-#include "src/core/SkScopeExit.h"
+#include "src/core/SkStringUtils.h"
 #include "src/core/SkTraceEvent.h"
+#include "src/gpu/ganesh/GrAppliedClip.h"
 #include "src/gpu/ganesh/GrAttachment.h"
 #include "src/gpu/ganesh/GrAuditTrail.h"
 #include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrGpu.h"
-#include "src/gpu/ganesh/GrMemoryPool.h"
+#include "src/gpu/ganesh/GrNativeRect.h"
 #include "src/gpu/ganesh/GrOpFlushState.h"
 #include "src/gpu/ganesh/GrOpsRenderPass.h"
 #include "src/gpu/ganesh/GrRecordingContextPriv.h"
 #include "src/gpu/ganesh/GrRenderTarget.h"
+#include "src/gpu/ganesh/GrRenderTargetProxy.h"
 #include "src/gpu/ganesh/GrResourceAllocator.h"
 #include "src/gpu/ganesh/GrResourceProvider.h"
-#include "src/gpu/ganesh/GrTexture.h"
+#include "src/gpu/ganesh/GrSurfaceProxyView.h"
+#include "src/gpu/ganesh/GrTextureProxy.h"
+#include "src/gpu/ganesh/GrTextureResolveManager.h"
 #include "src/gpu/ganesh/geometry/GrRect.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <utility>
+
+class GrDrawingManager;
+enum GrSurfaceOrigin : int;
+
+using namespace skia_private;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -47,7 +68,7 @@ GrOpsRenderPass* create_render_pass(GrGpu* gpu,
                                     const std::array<float, 4>& loadClearColor,
                                     GrLoadOp stencilLoadOp,
                                     GrStoreOp stencilStoreOp,
-                                    const SkTArray<GrSurfaceProxy*, true>& sampledProxies,
+                                    const TArray<GrSurfaceProxy*, true>& sampledProxies,
                                     GrXferBarrierFlags renderPassXferBarriers) {
     const GrOpsRenderPass::LoadAndStoreInfo kColorLoadStoreInfo {
         colorLoadOp,
@@ -73,7 +94,7 @@ GrOpsRenderPass* create_render_pass(GrGpu* gpu,
 
 ////////////////////////////////////////////////////////////////////////////////
 
-namespace skgpu::v1 {
+namespace skgpu::ganesh {
 
 inline OpsTask::OpChain::List::List(GrOp::Owner op)
         : fHead(std::move(op)), fTail(fHead.get()) {
@@ -173,7 +194,7 @@ void OpsTask::OpChain::visitProxies(const GrVisitProxyFunc& func) const {
         op.visitProxies(func);
     }
     if (fDstProxyView.proxy()) {
-        func(fDstProxyView.proxy(), GrMipmapped::kNo);
+        func(fDstProxyView.proxy(), skgpu::Mipmapped::kNo);
     }
     if (fAppliedClip) {
         fAppliedClip->visitProxies(func);
@@ -404,7 +425,7 @@ void OpsTask::deleteOps() {
     for (auto& chain : fOpChains) {
         chain.deleteOps();
     }
-    fOpChains.reset();
+    fOpChains.clear();
 }
 
 OpsTask::~OpsTask() {
@@ -413,7 +434,7 @@ OpsTask::~OpsTask() {
 
 void OpsTask::addOp(GrDrawingManager* drawingMgr, GrOp::Owner op,
                     GrTextureResolveManager textureResolveManager, const GrCaps& caps) {
-    auto addDependency = [&](GrSurfaceProxy* p, GrMipmapped mipmapped) {
+    auto addDependency = [&](GrSurfaceProxy* p, skgpu::Mipmapped mipmapped) {
         this->addDependency(drawingMgr, p, mipmapped, textureResolveManager, caps);
     };
 
@@ -427,7 +448,7 @@ void OpsTask::addDrawOp(GrDrawingManager* drawingMgr, GrOp::Owner op, bool usesM
                         const GrProcessorSet::Analysis& processorAnalysis, GrAppliedClip&& clip,
                         const GrDstProxyView& dstProxyView,
                         GrTextureResolveManager textureResolveManager, const GrCaps& caps) {
-    auto addDependency = [&](GrSurfaceProxy* p, GrMipmapped mipmapped) {
+    auto addDependency = [&](GrSurfaceProxy* p, skgpu::Mipmapped mipmapped) {
         this->addSampledTexture(p);
         this->addDependency(drawingMgr, p, mipmapped, textureResolveManager, caps);
     };
@@ -441,7 +462,7 @@ void OpsTask::addDrawOp(GrDrawingManager* drawingMgr, GrOp::Owner op, bool usesM
         if (dstProxyView.dstSampleFlags() & GrDstSampleFlags::kRequiresTextureBarrier) {
             fRenderPassXferBarriers |= GrXferBarrierFlags::kTexture;
         }
-        addDependency(dstProxyView.proxy(), GrMipmapped::kNo);
+        addDependency(dstProxyView.proxy(), skgpu::Mipmapped::kNo);
         SkASSERT(!(dstProxyView.dstSampleFlags() & GrDstSampleFlags::kAsInputAttachment) ||
                  dstProxyView.offset().isZero());
     }
@@ -458,8 +479,8 @@ void OpsTask::endFlush(GrDrawingManager* drawingMgr) {
     fLastClipStackGenID = SK_InvalidUniqueID;
     this->deleteOps();
 
-    fDeferredProxies.reset();
-    fSampledProxies.reset();
+    fDeferredProxies.clear();
+    fSampledProxies.clear();
     fAuditTrail = nullptr;
 
     GrRenderTask::endFlush(drawingMgr);
@@ -501,16 +522,13 @@ void OpsTask::onPrepare(GrOpFlushState* flushState) {
         (fClippedContentBounds.isEmpty() && fColorLoadOp != GrLoadOp::kDiscard)) {
         return;
     }
-    TRACE_EVENT0("skia.gpu", TRACE_FUNC);
+    TRACE_EVENT0_ALWAYS("skia.gpu", TRACE_FUNC);
 
     flushState->setSampledProxyArray(&fSampledProxies);
     GrSurfaceProxyView dstView(sk_ref_sp(this->target(0)), fTargetOrigin, fTargetSwizzle);
     // Loop over the ops that haven't yet been prepared.
     for (const auto& chain : fOpChains) {
         if (chain.shouldExecute()) {
-#ifdef SK_BUILD_FOR_ANDROID_FRAMEWORK
-            TRACE_EVENT0("skia.gpu", chain.head()->name());
-#endif
             GrOpFlushState::OpArgs opArgs(chain.head(),
                                           dstView,
                                           fUsesMSAASurface,
@@ -546,8 +564,7 @@ bool OpsTask::onExecute(GrOpFlushState* flushState) {
     if (this->isColorNoOp() || fClippedContentBounds.isEmpty()) {
         return false;
     }
-
-    TRACE_EVENT0("skia.gpu", TRACE_FUNC);
+    TRACE_EVENT0_ALWAYS("skia.gpu", TRACE_FUNC);
 
     // Make sure load ops are not kClear if the GPU needs to use draws for clears
     SkASSERT(fColorLoadOp != GrLoadOp::kClear ||
@@ -636,9 +653,6 @@ bool OpsTask::onExecute(GrOpFlushState* flushState) {
         if (!chain.shouldExecute()) {
             continue;
         }
-#ifdef SK_BUILD_FOR_ANDROID_FRAMEWORK
-        TRACE_EVENT0("skia.gpu", chain.head()->name());
-#endif
 
         GrOpFlushState::OpArgs opArgs(chain.head(),
                                       dstView,
@@ -671,8 +685,8 @@ void OpsTask::setColorLoadOp(GrLoadOp op, std::array<float, 4> color) {
 }
 
 void OpsTask::reset() {
-    fDeferredProxies.reset();
-    fSampledProxies.reset();
+    fDeferredProxies.clear();
+    fSampledProxies.clear();
     fClippedContentBounds = SkIRect::MakeEmpty();
     fTotalBounds = SkRect::MakeEmpty();
     this->deleteOps();
@@ -711,9 +725,9 @@ int OpsTask::mergeFrom(SkSpan<const sk_sp<GrRenderTask>> tasks) {
     int addlProxyCount = 0;
     int addlOpChainCount = 0;
     for (const auto& toMerge : mergingNodes) {
-        addlDeferredProxyCount += toMerge->fDeferredProxies.count();
-        addlProxyCount += toMerge->fSampledProxies.count();
-        addlOpChainCount += toMerge->fOpChains.count();
+        addlDeferredProxyCount += toMerge->fDeferredProxies.size();
+        addlProxyCount += toMerge->fSampledProxies.size();
+        addlOpChainCount += toMerge->fOpChains.size();
         fClippedContentBounds.join(toMerge->fClippedContentBounds);
         fTotalBounds.join(toMerge->fTotalBounds);
         fRenderPassXferBarriers |= toMerge->fRenderPassXferBarriers;
@@ -734,9 +748,9 @@ int OpsTask::mergeFrom(SkSpan<const sk_sp<GrRenderTask>> tasks) {
     }
 
     fLastClipStackGenID = SK_InvalidUniqueID;
-    fDeferredProxies.reserve_back(addlDeferredProxyCount);
-    fSampledProxies.reserve_back(addlProxyCount);
-    fOpChains.reserve_back(addlOpChainCount);
+    fDeferredProxies.reserve_exact(fDeferredProxies.size() + addlDeferredProxyCount);
+    fSampledProxies.reserve_exact(fSampledProxies.size() + addlProxyCount);
+    fOpChains.reserve_exact(fOpChains.size() + addlOpChainCount);
     for (const auto& toMerge : mergingNodes) {
         for (GrRenderTask* renderTask : toMerge->dependents()) {
             renderTask->replaceDependency(toMerge.get(), this);
@@ -744,15 +758,15 @@ int OpsTask::mergeFrom(SkSpan<const sk_sp<GrRenderTask>> tasks) {
         for (GrRenderTask* renderTask : toMerge->dependencies()) {
             renderTask->replaceDependent(toMerge.get(), this);
         }
-        fDeferredProxies.move_back_n(toMerge->fDeferredProxies.count(),
+        fDeferredProxies.move_back_n(toMerge->fDeferredProxies.size(),
                                      toMerge->fDeferredProxies.data());
-        fSampledProxies.move_back_n(toMerge->fSampledProxies.count(),
+        fSampledProxies.move_back_n(toMerge->fSampledProxies.size(),
                                     toMerge->fSampledProxies.data());
-        fOpChains.move_back_n(toMerge->fOpChains.count(),
+        fOpChains.move_back_n(toMerge->fOpChains.size(),
                               toMerge->fOpChains.data());
-        toMerge->fDeferredProxies.reset();
-        toMerge->fSampledProxies.reset();
-        toMerge->fOpChains.reset();
+        toMerge->fDeferredProxies.clear();
+        toMerge->fSampledProxies.clear();
+        toMerge->fOpChains.clear();
     }
     fMustPreserveStencil = mergingNodes.back()->fMustPreserveStencil;
     return mergedCount;
@@ -761,8 +775,8 @@ int OpsTask::mergeFrom(SkSpan<const sk_sp<GrRenderTask>> tasks) {
 bool OpsTask::resetForFullscreenClear(CanDiscardPreviousOps canDiscardPreviousOps) {
     if (CanDiscardPreviousOps::kYes == canDiscardPreviousOps || this->isEmpty()) {
         this->deleteOps();
-        fDeferredProxies.reset();
-        fSampledProxies.reset();
+        fDeferredProxies.clear();
+        fSampledProxies.clear();
 
         // If the opsTask is using a render target which wraps a vulkan command buffer, we can't do
         // a clear load since we cannot change the render pass that we are using. Thus we fall back
@@ -786,7 +800,7 @@ void OpsTask::discard() {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
 void OpsTask::dump(const SkString& label,
                    SkString indent,
                    bool printDependencies,
@@ -823,8 +837,8 @@ void OpsTask::dump(const SkString& label,
             break;
     }
 
-    SkDebugf("%s%d ops:\n", indent.c_str(), fOpChains.count());
-    for (int i = 0; i < fOpChains.count(); ++i) {
+    SkDebugf("%s%d ops:\n", indent.c_str(), fOpChains.size());
+    for (int i = 0; i < fOpChains.size(); ++i) {
         SkDebugf("%s*******************************\n", indent.c_str());
         if (!fOpChains[i].head()) {
             SkDebugf("%s%d: <combined forward or failed instantiation>\n", indent.c_str(), i);
@@ -854,7 +868,7 @@ void OpsTask::dump(const SkString& label,
 
 #ifdef SK_DEBUG
 void OpsTask::visitProxies_debugOnly(const GrVisitProxyFunc& func) const {
-    auto textureFunc = [ func ] (GrSurfaceProxy* tex, GrMipmapped mipmapped) {
+    auto textureFunc = [func](GrSurfaceProxy* tex, skgpu::Mipmapped mipmapped) {
         func(tex, mipmapped);
     };
 
@@ -869,7 +883,7 @@ void OpsTask::visitProxies_debugOnly(const GrVisitProxyFunc& func) const {
 
 void OpsTask::onMakeSkippable() {
     this->deleteOps();
-    fDeferredProxies.reset();
+    fDeferredProxies.clear();
     fColorLoadOp = GrLoadOp::kLoad;
     SkASSERT(this->isColorNoOp());
 }
@@ -884,7 +898,7 @@ bool OpsTask::onIsUsed(GrSurfaceProxy* proxyToCheck) const {
     }
 #ifdef SK_DEBUG
     bool usedSlow = false;
-    auto visit = [ proxyToCheck, &usedSlow ] (GrSurfaceProxy* p, GrMipmapped) {
+    auto visit = [proxyToCheck, &usedSlow](GrSurfaceProxy* p, skgpu::Mipmapped) {
         if (p == proxyToCheck) {
             usedSlow = true;
         }
@@ -902,38 +916,48 @@ void OpsTask::gatherProxyIntervals(GrResourceAllocator* alloc) const {
         return;
     }
 
-    for (int i = 0; i < fDeferredProxies.count(); ++i) {
+    for (int i = 0; i < fDeferredProxies.size(); ++i) {
         SkASSERT(!fDeferredProxies[i]->isInstantiated());
         // We give all the deferred proxies a write usage at the very start of flushing. This
         // locks them out of being reused for the entire flush until they are read - and then
         // they can be recycled. This is a bit unfortunate because a flush can proceed in waves
         // with sub-flushes. The deferred proxies only need to be pinned from the start of
         // the sub-flush in which they appear.
-        alloc->addInterval(fDeferredProxies[i], 0, 0, GrResourceAllocator::ActualUse::kNo);
+        alloc->addInterval(fDeferredProxies[i], 0, 0, GrResourceAllocator::ActualUse::kNo,
+                           GrResourceAllocator::AllowRecycling::kYes);
     }
 
-    GrSurfaceProxy* targetProxy = this->target(0);
+    GrSurfaceProxy* targetSurface = this->target(0);
+    SkASSERT(targetSurface);
+    GrRenderTargetProxy* targetProxy = targetSurface->asRenderTargetProxy();
 
     // Add the interval for all the writes to this OpsTasks's target
-    if (fOpChains.count()) {
+    if (!fOpChains.empty()) {
         unsigned int cur = alloc->curOp();
 
-        alloc->addInterval(targetProxy, cur, cur + fOpChains.count() - 1,
-                           GrResourceAllocator::ActualUse::kYes);
+        alloc->addInterval(targetProxy, cur, cur + fOpChains.size() - 1,
+                           GrResourceAllocator::ActualUse::kYes,
+                           GrResourceAllocator::AllowRecycling::kYes);
     } else {
         // This can happen if there is a loadOp (e.g., a clear) but no other draws. In this case we
         // still need to add an interval for the destination so we create a fake op# for
         // the missing clear op.
         alloc->addInterval(targetProxy, alloc->curOp(), alloc->curOp(),
-                           GrResourceAllocator::ActualUse::kYes);
+                           GrResourceAllocator::ActualUse::kYes,
+                           GrResourceAllocator::AllowRecycling::kYes);
         alloc->incOps();
     }
 
-    auto gather = [ alloc SkDEBUGCODE(, this) ] (GrSurfaceProxy* p, GrMipmapped) {
+    GrResourceAllocator::AllowRecycling allowRecycling =
+            targetProxy->wrapsVkSecondaryCB() ? GrResourceAllocator::AllowRecycling::kNo
+                                              : GrResourceAllocator::AllowRecycling::kYes;
+
+    auto gather = [alloc, allowRecycling SkDEBUGCODE(, this)](GrSurfaceProxy* p, skgpu::Mipmapped) {
         alloc->addInterval(p,
                            alloc->curOp(),
                            alloc->curOp(),
-                           GrResourceAllocator::ActualUse::kYes
+                           GrResourceAllocator::ActualUse::kYes,
+                           allowRecycling
                            SkDEBUGCODE(, this->target(0) == p));
     };
     // TODO: visitProxies is expensive. Can we do this with fSampledProxies instead?
@@ -986,7 +1010,7 @@ void OpsTask::recordOp(
                op->bounds().fRight, op->bounds().fBottom);
     GrOP_INFO(SkTabString(op->dumpInfo(), 1).c_str());
     GrOP_INFO("\tOutcome:\n");
-    int maxCandidates = std::min(kMaxOpChainDistance, fOpChains.count());
+    int maxCandidates = std::min(kMaxOpChainDistance, fOpChains.size());
     if (maxCandidates) {
         int i = 0;
         while (true) {
@@ -1019,11 +1043,11 @@ void OpsTask::recordOp(
 
 void OpsTask::forwardCombine(const GrCaps& caps) {
     SkASSERT(!this->isClosed());
-    GrOP_INFO("opsTask: %d ForwardCombine %d ops:\n", this->uniqueID(), fOpChains.count());
+    GrOP_INFO("opsTask: %d ForwardCombine %d ops:\n", this->uniqueID(), fOpChains.size());
 
-    for (int i = 0; i < fOpChains.count() - 1; ++i) {
+    for (int i = 0; i < fOpChains.size() - 1; ++i) {
         OpChain& chain = fOpChains[i];
-        int maxCandidateIdx = std::min(i + kMaxOpChainDistance, fOpChains.count() - 1);
+        int maxCandidateIdx = std::min(i + kMaxOpChainDistance, fOpChains.size() - 1);
         int j = i + 1;
         while (true) {
             OpChain& candidate = fOpChains[j];
@@ -1070,4 +1094,4 @@ GrRenderTask::ExpectedOutcome OpsTask::onMakeClosed(GrRecordingContext* rContext
     return ExpectedOutcome::kTargetUnchanged;
 }
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh

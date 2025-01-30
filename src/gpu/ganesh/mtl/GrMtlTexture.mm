@@ -7,9 +7,10 @@
 
 #include "src/gpu/ganesh/mtl/GrMtlTexture.h"
 
+#include "include/gpu/ganesh/mtl/GrMtlBackendSurface.h"
 #include "src/gpu/ganesh/GrTexture.h"
 #include "src/gpu/ganesh/mtl/GrMtlGpu.h"
-#include "src/gpu/ganesh/mtl/GrMtlUtil.h"
+#include "src/gpu/mtl/MtlUtilsPriv.h"
 
 #if !__has_feature(objc_arc)
 #error This file must be compiled with Arc. Use -fobjc-arc flag
@@ -18,7 +19,7 @@
 GR_NORETAIN_BEGIN
 
 GrMtlTexture::GrMtlTexture(GrMtlGpu* gpu,
-                           SkBudgeted budgeted,
+                           skgpu::Budgeted budgeted,
                            SkISize dimensions,
                            sk_sp<GrMtlAttachment> texture,
                            GrMipmapStatus mipmapStatus,
@@ -28,12 +29,12 @@ GrMtlTexture::GrMtlTexture(GrMtlGpu* gpu,
         , fTexture(std::move(texture)) {
     SkDEBUGCODE(id<MTLTexture> mtlTexture = fTexture->mtlTexture();)
     SkASSERT((GrMipmapStatus::kNotAllocated == mipmapStatus) == (1 == mtlTexture.mipmapLevelCount));
-    if (@available(macOS 10.11, iOS 9.0, *)) {
+    if (@available(macOS 10.11, iOS 9.0, tvOS 9.0, *)) {
         SkASSERT(SkToBool(mtlTexture.usage & MTLTextureUsageShaderRead));
     }
     SkASSERT(!mtlTexture.framebufferOnly);
     this->registerWithCache(budgeted);
-    if (GrMtlFormatIsCompressed(fTexture->mtlFormat())) {
+    if (skgpu::MtlFormatIsCompressed(fTexture->mtlFormat())) {
         this->setReadOnly();
     }
 }
@@ -51,7 +52,7 @@ GrMtlTexture::GrMtlTexture(GrMtlGpu* gpu,
         , fTexture(std::move(texture)) {
     SkDEBUGCODE(id<MTLTexture> mtlTexture = fTexture->mtlTexture();)
     SkASSERT((GrMipmapStatus::kNotAllocated == mipmapStatus) == (1 == mtlTexture.mipmapLevelCount));
-    if (@available(macOS 10.11, iOS 9.0, *)) {
+    if (@available(macOS 10.11, iOS 9.0, tvOS 9.0, *)) {
         SkASSERT(SkToBool(mtlTexture.usage & MTLTextureUsageShaderRead));
     }
     SkASSERT(!mtlTexture.framebufferOnly);
@@ -71,18 +72,19 @@ GrMtlTexture::GrMtlTexture(GrMtlGpu* gpu,
         , fTexture(std::move(texture)) {
     SkDEBUGCODE(id<MTLTexture> mtlTexture = fTexture->mtlTexture();)
     SkASSERT((GrMipmapStatus::kNotAllocated == mipmapStatus) == (1 == mtlTexture.mipmapLevelCount));
-    if (@available(macOS 10.11, iOS 9.0, *)) {
+    if (@available(macOS 10.11, iOS 9.0, tvOS 9.0, *)) {
         SkASSERT(SkToBool(mtlTexture.usage & MTLTextureUsageShaderRead));
     }
     SkASSERT(!mtlTexture.framebufferOnly);
 }
 
 sk_sp<GrMtlTexture> GrMtlTexture::MakeNewTexture(GrMtlGpu* gpu,
-                                                 SkBudgeted budgeted,
+                                                 skgpu::Budgeted budgeted,
                                                  SkISize dimensions,
                                                  MTLPixelFormat format,
                                                  uint32_t mipLevels,
-                                                 GrMipmapStatus mipmapStatus) {
+                                                 GrMipmapStatus mipmapStatus,
+                                                 std::string_view label) {
     sk_sp<GrMtlAttachment> texture = GrMtlAttachment::MakeTexture(
             gpu, dimensions, format, mipLevels, GrRenderable::kNo, /*numSamples=*/1, budgeted);
 
@@ -90,7 +92,7 @@ sk_sp<GrMtlTexture> GrMtlTexture::MakeNewTexture(GrMtlGpu* gpu,
         return nullptr;
     }
     return sk_sp<GrMtlTexture>(new GrMtlTexture(gpu, budgeted, dimensions, std::move(texture),
-                                                mipmapStatus, /*label=*/{}));
+                                                mipmapStatus, label));
 }
 
 sk_sp<GrMtlTexture> GrMtlTexture::MakeWrappedTexture(GrMtlGpu* gpu,
@@ -99,12 +101,13 @@ sk_sp<GrMtlTexture> GrMtlTexture::MakeWrappedTexture(GrMtlGpu* gpu,
                                                      GrWrapCacheable cacheable,
                                                      GrIOType ioType) {
     SkASSERT(nil != texture);
-    if (@available(macOS 10.11, iOS 9.0, *)) {
+    if (@available(macOS 10.11, iOS 9.0, tvOS 9.0, *)) {
         SkASSERT(SkToBool(texture.usage & MTLTextureUsageShaderRead));
     }
     sk_sp<GrMtlAttachment> attachment =
             GrMtlAttachment::MakeWrapped(gpu, dimensions, texture,
-                                         GrAttachment::UsageFlags::kTexture, cacheable);
+                                         GrAttachment::UsageFlags::kTexture, cacheable,
+                                         /*label=*/"MtlAttachment_MakeWrapped");
     if (!attachment) {
         return nullptr;
     }
@@ -113,7 +116,7 @@ sk_sp<GrMtlTexture> GrMtlTexture::MakeWrappedTexture(GrMtlGpu* gpu,
                                                                : GrMipmapStatus::kNotAllocated;
     return sk_sp<GrMtlTexture>(
             new GrMtlTexture(gpu, kWrapped, dimensions, std::move(attachment), mipmapStatus,
-                             cacheable, ioType, /*label=*/{}));
+                             cacheable, ioType, /*label=*/"MtlTextureWrappedTexture"));
 }
 
 GrMtlTexture::~GrMtlTexture() {
@@ -126,15 +129,24 @@ GrMtlGpu* GrMtlTexture::getMtlGpu() const {
 }
 
 GrBackendTexture GrMtlTexture::getBackendTexture() const {
-    GrMipmapped mipmapped = fTexture->mtlTexture().mipmapLevelCount > 1 ? GrMipmapped::kYes
-                                                                        : GrMipmapped::kNo;
+    skgpu::Mipmapped mipmapped = fTexture->mtlTexture().mipmapLevelCount > 1
+                                         ? skgpu::Mipmapped::kYes
+                                         : skgpu::Mipmapped::kNo;
     GrMtlTextureInfo info;
     info.fTexture.reset(GrRetainPtrFromId(fTexture->mtlTexture()));
-    return GrBackendTexture(this->width(), this->height(), mipmapped, info);
+    return GrBackendTextures::MakeMtl(this->width(), this->height(), mipmapped, info);
 }
 
 GrBackendFormat GrMtlTexture::backendFormat() const {
-    return GrBackendFormat::MakeMtl(fTexture->mtlFormat());
+    return GrBackendFormats::MakeMtl(fTexture->mtlFormat());
+}
+
+void GrMtlTexture::onSetLabel() {
+    SkASSERT(fTexture);
+    if (!this->getLabel().empty()) {
+        NSString* labelStr = @(this->getLabel().c_str());
+        fTexture->mtlTexture().label = [@"_Skia_" stringByAppendingString:labelStr];
+    }
 }
 
 GR_NORETAIN_END

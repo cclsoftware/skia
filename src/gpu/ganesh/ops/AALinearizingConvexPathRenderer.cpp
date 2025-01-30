@@ -4,32 +4,70 @@
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
-
 #include "src/gpu/ganesh/ops/AALinearizingConvexPathRenderer.h"
 
+#include "include/core/SkMatrix.h"
+#include "include/core/SkPaint.h"
+#include "include/core/SkPath.h"
+#include "include/core/SkPoint.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkRefCnt.h"
+#include "include/core/SkScalar.h"
 #include "include/core/SkString.h"
-#include "src/core/SkGeometry.h"
-#include "src/core/SkPathPriv.h"
-#include "src/core/SkTraceEvent.h"
+#include "include/core/SkStrokeRec.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
+#include "include/private/SkColorData.h"
+#include "include/private/base/SkAssert.h"
+#include "include/private/base/SkDebug.h"
+#include "include/private/base/SkMalloc.h"
+#include "include/private/base/SkMath.h"
+#include "include/private/base/SkTArray.h"
+#include "include/private/base/SkTDArray.h"
+#include "include/private/gpu/ganesh/GrTypesPriv.h"
 #include "src/gpu/BufferWriter.h"
+#include "src/gpu/ganesh/GrAppliedClip.h"
 #include "src/gpu/ganesh/GrAuditTrail.h"
-#include "src/gpu/ganesh/GrCaps.h"
+#include "src/gpu/ganesh/GrBuffer.h"
 #include "src/gpu/ganesh/GrDefaultGeoProcFactory.h"
 #include "src/gpu/ganesh/GrDrawOpTest.h"
 #include "src/gpu/ganesh/GrGeometryProcessor.h"
+#include "src/gpu/ganesh/GrMeshDrawTarget.h"
 #include "src/gpu/ganesh/GrOpFlushState.h"
-#include "src/gpu/ganesh/GrProcessor.h"
+#include "src/gpu/ganesh/GrPaint.h"
+#include "src/gpu/ganesh/GrProcessorAnalysis.h"
+#include "src/gpu/ganesh/GrProcessorSet.h"
 #include "src/gpu/ganesh/GrProgramInfo.h"
+#include "src/gpu/ganesh/GrRecordingContextPriv.h"
+#include "src/gpu/ganesh/GrSimpleMesh.h"
 #include "src/gpu/ganesh/GrStyle.h"
+#include "src/gpu/ganesh/SurfaceDrawContext.h"
 #include "src/gpu/ganesh/geometry/GrAAConvexTessellator.h"
-#include "src/gpu/ganesh/geometry/GrPathUtils.h"
 #include "src/gpu/ganesh/geometry/GrStyledShape.h"
 #include "src/gpu/ganesh/ops/GrMeshDrawOp.h"
+#include "src/gpu/ganesh/ops/GrOp.h"
 #include "src/gpu/ganesh/ops/GrSimpleMeshDrawOpHelperWithStencil.h"
-#include "src/gpu/ganesh/v1/SurfaceDrawContext_v1.h"
+
+#if defined(GPU_TEST_UTILS)
+#include "src/base/SkRandom.h"
+#include "src/gpu/ganesh/GrTestUtils.h"
+#endif
+
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <utility>
+
+class GrCaps;
+class GrDstProxyView;
+class GrSurfaceProxyView;
+class SkArenaAlloc;
+enum class GrXferBarrierFlags;
+struct GrUserStencilSettings;
+
+using namespace skia_private;
 
 ///////////////////////////////////////////////////////////////////////////////
-namespace skgpu::v1 {
+namespace skgpu::ganesh {
 
 namespace {
 
@@ -212,7 +250,7 @@ private:
         }
 
         size_t vertexStride =  fProgramInfo->geomProc().vertexStride();
-        int instanceCount = fPaths.count();
+        int instanceCount = fPaths.size();
 
         int64_t vertexCount = 0;
         int64_t indexCount = 0;
@@ -279,13 +317,13 @@ private:
     }
 
     void onExecute(GrOpFlushState* flushState, const SkRect& chainBounds) override {
-        if (!fProgramInfo || fMeshes.isEmpty()) {
+        if (!fProgramInfo || fMeshes.empty()) {
             return;
         }
 
         flushState->bindPipelineAndScissorClip(*fProgramInfo, chainBounds);
         flushState->bindTextures(fProgramInfo->geomProc(), nullptr, fProgramInfo->pipeline());
-        for (int i = 0; i < fMeshes.count(); ++i) {
+        for (int i = 0; i < fMeshes.size(); ++i) {
             flushState->drawMesh(*fMeshes[i]);
         }
     }
@@ -296,12 +334,12 @@ private:
             return CombineResult::kCannotCombine;
         }
 
-        fPaths.push_back_n(that->fPaths.count(), that->fPaths.begin());
+        fPaths.push_back_n(that->fPaths.size(), that->fPaths.begin());
         fWideColor |= that->fWideColor;
         return CombineResult::kMerged;
     }
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
     SkString onDumpInfo() const override {
         SkString string;
         for (const auto& path : fPaths) {
@@ -326,7 +364,7 @@ private:
         SkPaint::Join fJoin;
     };
 
-    SkSTArray<1, PathData, true> fPaths;
+    STArray<1, PathData, true> fPaths;
     Helper fHelper;
     bool fWideColor;
 
@@ -369,7 +407,7 @@ AALinearizingConvexPathRenderer::onCanDrawPath(const CanDrawPathArgs& args) cons
         if (strokeWidth < 1.0f && stroke.getStyle() == SkStrokeRec::kStroke_Style) {
             return CanDrawPath::kNo;
         }
-        if (strokeWidth > kMaxStrokeWidth ||
+        if ((strokeWidth > kMaxStrokeWidth && !args.fShape->isRect()) ||
             !args.fShape->knownToBeClosed() ||
             stroke.getJoin() == SkPaint::Join::kRound_Join) {
             return CanDrawPath::kNo;
@@ -410,9 +448,9 @@ bool AALinearizingConvexPathRenderer::onDrawPath(const DrawPathArgs& args) {
     return true;
 }
 
-} // namespace skgpu::v1
+}  // namespace skgpu::ganesh
 
-#if GR_TEST_UTILS
+#if defined(GPU_TEST_UTILS)
 
 GR_DRAW_OP_TEST_DEFINE(AAFlatteningConvexPathOp) {
     SkMatrix viewMatrix = GrTest::TestMatrixPreservesRightAngles(random);
@@ -438,9 +476,15 @@ GR_DRAW_OP_TEST_DEFINE(AAFlatteningConvexPathOp) {
         miterLimit = random->nextRangeF(0.5f, 2.0f);
     }
     const GrUserStencilSettings* stencilSettings = GrGetRandomStencil(random, context);
-    return skgpu::v1::AAFlatteningConvexPathOp::Make(context, std::move(paint), viewMatrix, path,
-                                                     strokeWidth, style, join, miterLimit,
-                                                     stencilSettings);
+    return skgpu::ganesh::AAFlatteningConvexPathOp::Make(context,
+                                                         std::move(paint),
+                                                         viewMatrix,
+                                                         path,
+                                                         strokeWidth,
+                                                         style,
+                                                         join,
+                                                         miterLimit,
+                                                         stencilSettings);
 }
 
 #endif

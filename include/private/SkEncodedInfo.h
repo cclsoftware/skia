@@ -8,12 +8,19 @@
 #ifndef SkEncodedInfo_DEFINED
 #define SkEncodedInfo_DEFINED
 
-#include <memory>
-
+#include "include/core/SkAlphaType.h"
 #include "include/core/SkColorSpace.h"
+#include "include/core/SkColorType.h"
 #include "include/core/SkData.h"
 #include "include/core/SkImageInfo.h"
-#include "include/third_party/skcms/skcms.h"
+#include "include/core/SkRefCnt.h"
+#include "include/core/SkTypes.h"
+#include "include/private/base/SkTo.h"
+#include "modules/skcms/skcms.h"
+
+#include <cstdint>
+#include <memory>
+#include <utility>
 
 struct SkEncodedInfo {
 public:
@@ -23,6 +30,7 @@ public:
         static std::unique_ptr<ICCProfile> Make(const skcms_ICCProfile&);
 
         const skcms_ICCProfile* profile() const { return &fProfile; }
+        sk_sp<SkData> data() const { return fData; }
     private:
         ICCProfile(const skcms_ICCProfile&, sk_sp<SkData> = nullptr);
 
@@ -158,8 +166,13 @@ public:
                 break;
         }
 
-        return SkEncodedInfo(width, height, color, alpha,
-                bitsPerComponent, colorDepth, std::move(profile));
+        return SkEncodedInfo(width,
+                             height,
+                             color,
+                             alpha,
+                             SkToU8(bitsPerComponent),
+                             SkToU8(colorDepth),
+                             std::move(profile));
     }
 
     /*
@@ -190,6 +203,10 @@ public:
     const skcms_ICCProfile* profile() const {
         if (!fProfile) return nullptr;
         return fProfile->profile();
+    }
+    sk_sp<SkData> profileData() const {
+        if (!fProfile) return nullptr;
+        return fProfile->data();
     }
 
     uint8_t bitsPerComponent() const { return fBitsPerComponent; }

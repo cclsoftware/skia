@@ -7,16 +7,27 @@
 
 #include "src/gpu/ganesh/GrDynamicAtlas.h"
 
+#include "include/core/SkTypes.h"
+#include "include/gpu/GpuTypes.h"
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "src/base/SkMathPriv.h"
 #include "src/core/SkIPoint16.h"
+#include "src/gpu/Rectanizer.h"
 #include "src/gpu/RectanizerPow2.h"
 #include "src/gpu/RectanizerSkyline.h"
 #include "src/gpu/ganesh/GrCaps.h"
 #include "src/gpu/ganesh/GrOnFlushResourceProvider.h"
 #include "src/gpu/ganesh/GrProxyProvider.h"
 #include "src/gpu/ganesh/GrRenderTarget.h"
+#include "src/gpu/ganesh/GrRenderTargetProxy.h"
 #include "src/gpu/ganesh/GrResourceProvider.h"
 #include "src/gpu/ganesh/GrSurfaceProxyPriv.h"
 #include "src/gpu/ganesh/GrSurfaceProxyView.h"
+#include "src/gpu/ganesh/GrTexture.h"
+
+#include <algorithm>
+#include <functional>
+#include <utility>
 
 using namespace skgpu;
 
@@ -95,15 +106,16 @@ void GrDynamicAtlas::reset(SkISize initialSize, const GrCaps& caps) {
     fTextureProxy = MakeLazyAtlasProxy(
             [this](GrResourceProvider* resourceProvider, const LazyAtlasDesc& desc) {
                 if (!fBackingTexture) {
-                    fBackingTexture = resourceProvider->createTexture(
-                            fTextureProxy->backingStoreDimensions(),
-                            desc.fFormat,
-                            desc.fTextureType,
-                            desc.fRenderable,
-                            desc.fSampleCnt,
-                            desc.fMipmapped,
-                            desc.fBudgeted,
-                            desc.fProtected);
+                    fBackingTexture =
+                            resourceProvider->createTexture(fTextureProxy->backingStoreDimensions(),
+                                                            desc.fFormat,
+                                                            desc.fTextureType,
+                                                            desc.fRenderable,
+                                                            desc.fSampleCnt,
+                                                            desc.fMipmapped,
+                                                            desc.fBudgeted,
+                                                            desc.fProtected,
+                                                            desc.fLabel);
                 }
                 return GrSurfaceProxy::LazyCallbackResult(fBackingTexture);
             },
@@ -187,7 +199,7 @@ bool GrDynamicAtlas::internalPlaceRect(int w, int h, SkIPoint16* loc) {
     return true;
 }
 
-void GrDynamicAtlas::instantiate(GrOnFlushResourceProvider* onFlushRP,
+bool GrDynamicAtlas::instantiate(GrOnFlushResourceProvider* onFlushRP,
                                  sk_sp<GrTexture> backingTexture) {
     SkASSERT(!this->isInstantiated());  // This method should only be called once.
     // Caller should have cropped any paths to the destination render target instead of asking for
@@ -210,7 +222,9 @@ void GrDynamicAtlas::instantiate(GrOnFlushResourceProvider* onFlushRP,
         SkASSERT(backingRT->numSamples() == fTextureProxy->asRenderTargetProxy()->numSamples());
         SkASSERT(backingRT->dimensions() == fTextureProxy->backingStoreDimensions());
 #endif
+        // This works bc 'fTextureProxy' is a lazy proxy and, in its LazyInstantiateAtlasCallback,
+        // it will just wrap 'fBackingTexture' if it is non-null.
         fBackingTexture = std::move(backingTexture);
     }
-    onFlushRP->instatiateProxy(fTextureProxy.get());
+    return onFlushRP->instantiateProxy(fTextureProxy.get());
 }

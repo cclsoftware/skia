@@ -10,24 +10,32 @@
 
 #include "include/core/SkRefCnt.h"
 
+#include <memory>
+
 namespace skgpu::graphite {
 class CommandBuffer;
-class Gpu;
+class SharedContext;
+class QueueManager;
 
 class GpuWorkSubmission {
 public:
     virtual ~GpuWorkSubmission();
 
-    virtual bool isFinished() = 0;
-    virtual void waitUntilFinished(const Gpu*) = 0;
+    bool isFinished(const SharedContext* sharedContext);
+    void waitUntilFinished(const SharedContext* sharedContext);
 
 protected:
     CommandBuffer* commandBuffer() { return fCommandBuffer.get(); }
 
-    GpuWorkSubmission(sk_sp<CommandBuffer> cmdBuffer);
+    GpuWorkSubmission(std::unique_ptr<CommandBuffer> cmdBuffer, QueueManager* queueManager);
 
 private:
-    sk_sp<CommandBuffer> fCommandBuffer;
+    virtual bool onIsFinished(const SharedContext* sharedContext) = 0;
+    virtual void onWaitUntilFinished(const SharedContext* sharedContext) = 0;
+
+    std::unique_ptr<CommandBuffer> fCommandBuffer;
+    sk_sp<SkRefCnt> fOutstandingAsyncMapCounter;
+    QueueManager* fQueueManager;
 };
 
 } // namespace skgpu::graphite
