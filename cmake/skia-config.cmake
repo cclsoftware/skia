@@ -14,7 +14,7 @@
 #************************************************************************************************
 
 # increment when updating skia sources
-set (SKIA_REVISION 1)
+set (SKIA_REVISION 2)
 
 ccl_find_path (skia_SOURCE_DIR NAMES "BUILD.gn" HINTS "${CMAKE_CURRENT_LIST_DIR}/.." DOC "Skia directory")
 ccl_find_program (NINJA NAMES "ninja" HINTS "${CCL_TOOLS_BINDIR}/${VENDOR_HOST_PLATFORM}/depot_tools" PATH_SUFFIXES "${CMAKE_HOST_SYSTEM_PROCESSOR}" DOC "Ninja executable")
@@ -38,7 +38,7 @@ else ()
 	set (CCACHE_WRAPPER_PATH "")
 endif ()
 
-set (SKIA_SHARED_ARGS "cc=\\\"${CMAKE_C_COMPILER}\\\" cxx=\\\"${CMAKE_CXX_COMPILER}\\\" cc_wrapper=\\\"${CCACHE_WRAPPER_PATH}\\\" ${SKIA_IS_DEBUG} is_official_build=false skia_enable_sktext=false skia_use_expat=false skia_use_harfbuzz=true skia_use_libwebp_decode=false skia_use_libwebp_encode=false skia_use_libheif=false skia_use_icu=true skia_use_sfntly=false skia_use_piex=false skia_use_zlib=true skia_use_xps=false skia_enable_spirv_validation=false skia_enable_tools=false skia_enable_skottie=false skia_enable_skshaper=true skia_enable_sksl=false skia_pdf_subset_harfbuzz=true skia_use_libjpeg_turbo_encode=true skia_use_libpng_encode=true skia_use_libjpeg_turbo_decode=true skia_use_libpng_decode=true skia_use_libgifcodec=true")
+set (SKIA_SHARED_ARGS "cc=\\\"${CMAKE_C_COMPILER}\\\" cxx=\\\"${CMAKE_CXX_COMPILER}\\\" cc_wrapper=\\\"${CCACHE_WRAPPER_PATH}\\\" ${SKIA_IS_DEBUG} is_official_build=false is_trivial_abi=false skia_use_expat=false skia_use_harfbuzz=true skia_use_libwebp_decode=false skia_use_libwebp_encode=false skia_use_libheif=false skia_use_icu=true skia_use_piex=false skia_use_zlib=true skia_use_xps=false skia_enable_spirv_validation=false skia_enable_tools=false skia_enable_skottie=false skia_enable_skshaper=true skia_pdf_subset_harfbuzz=true skia_use_libjpeg_turbo_encode=true skia_use_libpng_encode=true skia_use_libjpeg_turbo_decode=true skia_use_libpng_decode=true skia_use_wuffs=true")
 
 set (filecontent
 	"#!${SHELL}")
@@ -53,8 +53,10 @@ add_custom_command (OUTPUT ${SKIA_GN}
 
 if(UNIX AND NOT APPLE)
 	set (skia_flavors ${VENDOR_TARGET_ARCHITECTURE})
+	set (skia_unicode_implementation icu)
 elseif (APPLE)
 	set (skia_flavors ${VENDOR_PLATFORM})
+	# TODO set (skia_unicode_implementation ...)
 endif ()
 
 option (SKIA_USE_SYSTEM_HARFBUZZ "Link Skia against system harfbuzz library" ON)
@@ -63,7 +65,8 @@ string (MD5 options_hash "${skia_FIND_COMPONENTS} ${SKIA_USE_SYSTEM_HARFBUZZ} ${
 set (skia_buildscript_name "build.ninja")
 set (skia_file_name "libskia.a")
 set (skshaper_file_name "libskshaper.a")
-set (skunicode_file_name "libskunicode.a")
+set (skunicode_file_name "libskunicode_core.a")
+set (skunicode_implementation_file_name "libskunicode_${skia_unicode_implementation}.a")
 set (skparagraph_file_name "libskparagraph.a")
 
 foreach (flavor ${skia_flavors})
@@ -72,9 +75,10 @@ foreach (flavor ${skia_flavors})
 	set (skia_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/${skia_file_name}")
 	set (skshaper_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/${skshaper_file_name}")
 	set (skunicode_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/${skunicode_file_name}")
+	set (skunicode_implementation_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/${skunicode_implementation_file_name}")
 	set (skparagraph_output_${flavor} "${skia_SOURCE_DIR}/${out_dir}/${skparagraph_file_name}")
 
-	set (skia_outputs_${flavor} "${skia_output_${flavor}}" "${skshaper_output_${flavor}}" "${skunicode_output_${flavor}}" "${skparagraph_output_${flavor}}")
+	set (skia_outputs_${flavor} "${skia_output_${flavor}}" "${skshaper_output_${flavor}}" "${skunicode_output_${flavor}}" "${skunicode_implementation_output_${flavor}}" "${skparagraph_output_${flavor}}")
 	list (APPEND skia_outputs ${skia_outputs_${flavor}})
 	set (skia_buildscript_${flavor} "${skia_SOURCE_DIR}/${out_dir}/${skia_buildscript_name}")
 	list (APPEND skia_byproducts ${skia_buildscript_${flavor}})
@@ -96,7 +100,7 @@ if (VENDOR_CACHE_DIRECTORY)
 		if (NOT "${teststring}" STREQUAL "")
 			string (APPEND teststring " -a ")
 		endif ()
-		string (APPEND teststring "-f ${skia_output_${flavor}} -a -f ${skshaper_output_${flavor}} -a -f ${skunicode_output_${flavor}} -a -f ${skparagraph_output_${flavor}}")
+		string (APPEND teststring "-f ${skia_output_${flavor}} -a -f ${skshaper_output_${flavor}} -a -f ${skunicode_output_${flavor}} -a -f ${skunicode_implementation_output_${flavor}} -a -f ${skparagraph_output_${flavor}}")
 	endforeach ()
 
 	string (APPEND filecontent "
@@ -227,6 +231,7 @@ if (VENDOR_CACHE_DIRECTORY)
 			cp ${skia_output_${flavor}} \"\${cachedir}/\"
 			cp ${skshaper_output_${flavor}} \"\${cachedir}/\"
 			cp ${skunicode_output_${flavor}} \"\${cachedir}/\"
+			cp ${skunicode_implementation_output_${flavor}} \"\${cachedir}/\"
 			cp ${skparagraph_output_${flavor}} \"\${cachedir}/\"
 		")
 	endforeach ()
@@ -287,6 +292,13 @@ if (NOT TARGET build_skia)
 			INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
 		)
 
+		add_library (skunicode_implementation_${flavor} SHARED IMPORTED GLOBAL)
+		add_dependencies (skunicode_implementation_${flavor} build_skia)
+		set_target_properties (skunicode_implementation_${flavor} PROPERTIES
+			IMPORTED_LOCATION "${skunicode_implementation_output_${flavor}}"
+			INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
+		)
+
 		add_library (skparagraph_${flavor} SHARED IMPORTED GLOBAL)
 		add_dependencies (skparagraph_${flavor} build_skia)
 		set_target_properties (skparagraph_${flavor} PROPERTIES
@@ -300,11 +312,11 @@ if (NOT TARGET build_skia)
 			target_compile_definitions (skia_${flavor} INTERFACE SK_RELEASE=1)
 		endif ()
 
-		list (APPEND SKIA_LIBRARIES skia_${flavor} skshaper_${flavor} skunicode_${flavor} skparagraph_${flavor})
+		list (APPEND SKIA_LIBRARIES skia_${flavor} skshaper_${flavor} skunicode_${flavor} skunicode_implementation_${flavor} skparagraph_${flavor})
 	endforeach ()
 
 else ()
 	foreach (flavor ${skia_flavors})
-		list (APPEND SKIA_LIBRARIES skia_${flavor} skshaper_${flavor} skunicode_${flavor} skparagraph_${flavor})
+		list (APPEND SKIA_LIBRARIES skia_${flavor} skshaper_${flavor} skunicode_${flavor} skunicode_implementation_${flavor} skparagraph_${flavor})
 	endforeach ()
 endif ()
