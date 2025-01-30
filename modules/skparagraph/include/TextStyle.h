@@ -288,7 +288,7 @@ public:
     void setPlaceholder() { fIsPlaceholder = true; }
 
 private:
-    static const std::vector<SkString>* kDefaultFontFamilies;
+    static const std::vector<SkString> kDefaultFontFamilies;
 
     Decoration fDecoration = {
             TextDecoration::kNoDecoration,
@@ -302,7 +302,7 @@ private:
 
     SkFontStyle fFontStyle;
 
-    std::vector<SkString> fFontFamilies = *kDefaultFontFamilies;
+    std::vector<SkString> fFontFamilies = kDefaultFontFamilies;
 
     SkScalar fFontSize = 14.0;
     SkScalar fHeight = 1.0;
