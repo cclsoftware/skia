@@ -370,7 +370,7 @@ nn{
             ls{"kaledonsk normaltid"}
         }
         "meta:New_Zealand"{
-            ld{"nyzealandsk sumartid"}
+            ld{"nyzealandsk sommartid"}
             lg{"nyzealandsk tid"}
             ls{"nyzealandsk normaltid"}
         }

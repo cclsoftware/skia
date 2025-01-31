@@ -48,6 +48,8 @@
 /* https://developer.apple.com/documentation/coretext/1508745-ctfontcreatewithgraphicsfont */
 #define HB_CORETEXT_DEFAULT_FONT_SIZE 12.f
 
+static CTFontRef create_ct_font (CGFontRef cg_font, CGFloat font_size);
+
 static void
 release_table_data (void *user_data)
 {
@@ -74,6 +76,52 @@ _hb_cg_reference_table (hb_face_t *face HB_UNUSED, hb_tag_t tag, void *user_data
   return hb_blob_create (data, length, HB_MEMORY_MODE_READONLY,
 			 reinterpret_cast<void *> (const_cast<__CFData *> (cf_data)),
 			 release_table_data);
+}
+
+static unsigned
+_hb_cg_get_table_tags (const hb_face_t *face HB_UNUSED,
+		       unsigned int start_offset,
+		       unsigned int *table_count,
+		       hb_tag_t *table_tags,
+		       void *user_data)
+{
+  CGFontRef cg_font = reinterpret_cast<CGFontRef> (user_data);
+
+  CTFontRef ct_font = create_ct_font (cg_font, (CGFloat) HB_CORETEXT_DEFAULT_FONT_SIZE);
+
+  auto arr = CTFontCopyAvailableTables (ct_font, kCTFontTableOptionNoOptions);
+
+  unsigned population = (unsigned) CFArrayGetCount (arr);
+  unsigned end_offset;
+
+  if (!table_count)
+    goto done;
+
+  if (unlikely (start_offset >= population))
+  {
+    *table_count = 0;
+    goto done;
+  }
+
+  end_offset = start_offset + *table_count;
+  if (unlikely (end_offset < start_offset))
+  {
+    *table_count = 0;
+    goto done;
+  }
+  end_offset= hb_min (end_offset, (unsigned) population);
+
+  *table_count = end_offset - start_offset;
+  for (unsigned i = start_offset; i < end_offset; i++)
+  {
+    CTFontTableTag tag = (CTFontTableTag)(uintptr_t) CFArrayGetValueAtIndex (arr, i);
+    table_tags[i - start_offset] = tag;
+  }
+
+done:
+  CFRelease (arr);
+  CFRelease (ct_font);
+  return population;
 }
 
 static void
@@ -294,7 +342,9 @@ _hb_coretext_shaper_face_data_destroy (hb_coretext_face_data_t *data)
 hb_face_t *
 hb_coretext_face_create (CGFontRef cg_font)
 {
-  return hb_face_create_for_tables (_hb_cg_reference_table, CGFontRetain (cg_font), _hb_cg_font_release);
+  hb_face_t *face = hb_face_create_for_tables (_hb_cg_reference_table, CGFontRetain (cg_font), _hb_cg_font_release);
+  hb_face_set_get_table_tags_func (face, _hb_cg_get_table_tags, cg_font, nullptr);
+  return face;
 }
 
 /**
@@ -332,7 +382,7 @@ _hb_coretext_shaper_font_data_create (hb_font_t *font)
     return nullptr;
   }
 
-  if (font->coords)
+  if (font->num_coords)
   {
     CFMutableDictionaryRef variations =
       CFDictionaryCreateMutable (kCFAllocatorDefault,
@@ -347,10 +397,13 @@ _hb_coretext_shaper_font_data_create (hb_font_t *font)
       hb_ot_var_axis_info_t info;
       unsigned int c = 1;
       hb_ot_var_get_axis_infos (font->face, i, &c, &info);
-      CFDictionarySetValue (variations,
-	CFNumberCreate (kCFAllocatorDefault, kCFNumberIntType, &info.tag),
-	CFNumberCreate (kCFAllocatorDefault, kCFNumberFloatType, &font->design_coords[i])
-      );
+      float v = hb_clamp (font->design_coords[i], info.min_value, info.max_value);
+
+      CFNumberRef tag_number = CFNumberCreate (kCFAllocatorDefault, kCFNumberIntType, &info.tag);
+      CFNumberRef value_number = CFNumberCreate (kCFAllocatorDefault, kCFNumberFloatType, &v);
+      CFDictionarySetValue (variations, tag_number, value_number);
+      CFRelease (tag_number);
+      CFRelease (value_number);
     }
 
     CFDictionaryRef attributes =
@@ -377,37 +430,6 @@ void
 _hb_coretext_shaper_font_data_destroy (hb_coretext_font_data_t *data)
 {
   CFRelease ((CTFontRef) data);
-}
-
-static const hb_coretext_font_data_t *
-hb_coretext_font_data_sync (hb_font_t *font)
-{
-retry:
-  const hb_coretext_font_data_t *data = font->data.coretext;
-  if (unlikely (!data)) return nullptr;
-
-  if (fabs (CTFontGetSize ((CTFontRef) data) - (CGFloat) font->ptem) > (CGFloat) .5)
-  {
-    /* XXX-MT-bug
-     * Note that evaluating condition above can be dangerous if another thread
-     * got here first and destructed data.  That's, as always, bad use pattern.
-     * If you modify the font (change font size), other threads must not be
-     * using it at the same time.  However, since this check is delayed to
-     * when one actually tries to shape something, this is a XXX race condition
-     * (and the only one we have that I know of) right now.  Ie. you modify the
-     * font size in one thread, then (supposedly safely) try to use it from two
-     * or more threads and BOOM!  I'm not sure how to fix this.  We want RCU.
-     */
-
-    /* Drop and recreate. */
-    /* If someone dropped it in the mean time, throw it away and don't touch it.
-     * Otherwise, destruct it. */
-    if (likely (font->data.coretext.cmpexch (const_cast<hb_coretext_font_data_t *> (data), nullptr)))
-      _hb_coretext_shaper_font_data_destroy (const_cast<hb_coretext_font_data_t *> (data));
-    else
-      goto retry;
-  }
-  return font->data.coretext;
 }
 
 /**
@@ -455,8 +477,8 @@ hb_coretext_font_create (CTFontRef ct_font)
 CTFontRef
 hb_coretext_font_get_ct_font (hb_font_t *font)
 {
-  const hb_coretext_font_data_t *data = hb_coretext_font_data_sync (font);
-  return data ? (CTFontRef) data : nullptr;
+  CTFontRef ct_font = (CTFontRef) (const void *) font->data.coretext;
+  return ct_font ? (CTFontRef) ct_font : nullptr;
 }
 
 
@@ -516,7 +538,7 @@ _hb_coretext_shape (hb_shape_plan_t    *shape_plan,
 {
   hb_face_t *face = font->face;
   CGFontRef cg_font = (CGFontRef) (const void *) face->data.coretext;
-  CTFontRef ct_font = (CTFontRef) hb_coretext_font_data_sync (font);
+  CTFontRef ct_font = (CTFontRef) (const void *) font->data.coretext;
 
   CGFloat ct_font_size = CTFontGetSize (ct_font);
   CGFloat x_mult = (CGFloat) font->x_scale / ct_font_size;
@@ -539,7 +561,6 @@ _hb_coretext_shape (hb_shape_plan_t    *shape_plan,
 	buffer->merge_clusters (i - 1, i + 1);
   }
 
-  hb_vector_t<feature_record_t> feature_records;
   hb_vector_t<range_record_t> range_records;
 
   /*
@@ -679,7 +700,7 @@ _hb_coretext_shape (hb_shape_plan_t    *shape_plan,
       } else {
 	active_feature_t *feature = active_features.lsearch (event->feature);
 	if (feature)
-	  active_features.remove (feature - active_features.arrayZ);
+	  active_features.remove_ordered (feature - active_features.arrayZ);
       }
     }
   }
@@ -897,7 +918,7 @@ resize_and_retry:
     DEBUG_MSG (CORETEXT, nullptr, "Num runs: %d", num_runs);
 
     buffer->len = 0;
-    uint32_t status_and = ~0, status_or = 0;
+    uint32_t status_or = 0;
     CGFloat advances_so_far = 0;
     /* For right-to-left runs, CoreText returns the glyphs positioned such that
      * any trailing whitespace is to the left of (0,0).  Adjust coordinate system
@@ -918,7 +939,6 @@ resize_and_retry:
       CTRunRef run = static_cast<CTRunRef>(CFArrayGetValueAtIndex (glyph_runs, i));
       CTRunStatus run_status = CTRunGetStatus (run);
       status_or  |= run_status;
-      status_and &= run_status;
       DEBUG_MSG (CORETEXT, run, "CTRunStatus: %x", run_status);
       CGFloat run_advance = CTRunGetTypographicBounds (run, range_all, nullptr, nullptr, nullptr);
       if (HB_DIRECTION_IS_VERTICAL (buffer->props.direction))
@@ -1107,7 +1127,8 @@ resize_and_retry:
 	      advance = positions[j + 1].x - positions[j].x;
 	    else /* last glyph */
 	      advance = run_advance - (positions[j].x - positions[0].x);
-	    info->mask = round (advance * x_mult);
+	    /* int cast necessary to pass through negative values. */
+	    info->mask = (int) round (advance * x_mult);
 	    info->var1.i32 = x_offset;
 	    info->var2.i32 = round (positions[j].y * y_mult);
 	    info++;
@@ -1123,7 +1144,8 @@ resize_and_retry:
 	      advance = positions[j + 1].y - positions[j].y;
 	    else /* last glyph */
 	      advance = run_advance - (positions[j].y - positions[0].y);
-	    info->mask = round (advance * y_mult);
+	    /* int cast necessary to pass through negative values. */
+	    info->mask = (int) round (advance * y_mult);
 	    info->var1.i32 = round (positions[j].x * x_mult);
 	    info->var2.i32 = y_offset;
 	    info++;
@@ -1140,21 +1162,6 @@ resize_and_retry:
       buffer->len += num_glyphs;
     }
 
-    /* Mac OS 10.6 doesn't have kCTTypesetterOptionForcedEmbeddingLevel,
-     * or if it does, it doesn't respect it.  So we get runs with wrong
-     * directions.  As such, disable the assert...  It wouldn't crash, but
-     * cursoring will be off...
-     *
-     * https://crbug.com/419769
-     */
-    if (false)
-    {
-      /* Make sure all runs had the expected direction. */
-      HB_UNUSED bool backward = HB_DIRECTION_IS_BACKWARD (buffer->props.direction);
-      assert (bool (status_and & kCTRunStatusRightToLeft) == backward);
-      assert (bool (status_or  & kCTRunStatusRightToLeft) == backward);
-    }
-
     buffer->clear_positions ();
 
     unsigned int count = buffer->len;
@@ -1167,7 +1174,7 @@ resize_and_retry:
 	pos->x_offset = info->var1.i32;
 	pos->y_offset = info->var2.i32;
 
-	info++, pos++;
+	info++; pos++;
       }
     else
       for (unsigned int i = 0; i < count; i++)
@@ -1176,7 +1183,7 @@ resize_and_retry:
 	pos->x_offset = info->var1.i32;
 	pos->y_offset = info->var2.i32;
 
-	info++, pos++;
+	info++; pos++;
       }
 
     /* Fix up clusters so that we never return out-of-order indices;
@@ -1189,7 +1196,8 @@ resize_and_retry:
      * This does *not* mean we'll form the same clusters as Uniscribe
      * or the native OT backend, only that the cluster indices will be
      * monotonic in the output buffer. */
-    if (count > 1 && (status_or & kCTRunStatusNonMonotonic))
+    if (count > 1 && (status_or & kCTRunStatusNonMonotonic) &&
+	buffer->cluster_level != HB_BUFFER_CLUSTER_LEVEL_CHARACTERS)
     {
       hb_glyph_info_t *info = buffer->info;
       if (HB_DIRECTION_IS_FORWARD (buffer->props.direction))
@@ -1212,6 +1220,10 @@ resize_and_retry:
       }
     }
   }
+
+  /* TODO: Sometimes the above positioning code generates negative
+   * advance values. Fix them up. Example, with NotoNastaliqUrdu
+   * font and sequence ابهد. */
 
   buffer->clear_glyph_flags ();
   buffer->unsafe_to_break ();

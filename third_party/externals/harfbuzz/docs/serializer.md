@@ -33,7 +33,7 @@ Here Obj N, is the object currently being written.
 ## Complex Tables
 
 Complex tables are made up of graphs of objects, where offset's are used
-to form the edges of the graphs. Each object is a continous slice of bytes
+to form the edges of the graphs. Each object is a continuous slice of bytes
 that contains zero or more offsets pointing to more objects.
 
 In this case the serialization buffer has a different layout:
@@ -73,7 +73,7 @@ using object ids. The serialize context maintains a list of links between
 objects. Each link records the parent object id, the child object id, the position
 of the offset field within the parent object, and the width of the offset.
 
-Links are always added to the current in progress object and you can only link too
+Links are always added to the current in progress object and you can only link to
 objects that have been packed and thus have an ID.
 
 ### Object De-duplication

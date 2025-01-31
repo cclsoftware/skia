@@ -388,7 +388,6 @@ ckb{
     }
     Languages%short{
         en_GB{"ئینگلیزی (GB)"}
-        en_US{"ئینگلیزیی ئەمەریکایی"}
     }
     Scripts{
         Arab{"عەرەبی"}
@@ -439,5 +438,8 @@ ckb{
     Scripts%stand-alone{
         Hans{"هانی ئاسانکراو"}
         Hant{"هانی دێرین"}
+    }
+    localeDisplayPattern{
+        separator{"{0}، {1}"}
     }
 }

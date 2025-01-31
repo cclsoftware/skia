@@ -137,6 +137,10 @@
     },
     "brkitr_rules": {
       "excludelist": [
+// Exclude *phrase_cj. Only Blink needs them, Browser doesn't.
+        "line_phrase_cj",
+        "line_normal_phrase_cj",
+        "line_loose_phrase_cj",
 // Exclude line_cj till we upgrade to 68.1 due to size impact.
         "line_cj",
         "title",
@@ -339,7 +343,71 @@
 // Based on the ICU63 version of
 // https://cs.chromium.org/chromium/src/third_party/icu/source/data/sprep/spreplocal.mk?rcl=797b7c
     "stringprep": { "filterType": "exclude" },
-    "translit": { "filterType": "exclude" },
+    "translit": {
+      "filterType": "language",
+      "includelist": [
+// Need to explicitly add "root"
+        "root",
+// List of all Chrome UI Languages
+        "af",
+        "am",
+        "ar",
+        "bg",
+        "bn",
+        "ca",
+        "cs",
+        "da",
+        "de",
+        "el",
+        "en",
+        "es",
+        "et",
+        "fa",
+        "fi",
+        "fil",
+        "fr",
+        "gu",
+        "he",
+        "hi",
+        "hr",
+        "hu",
+        "id",
+        "in",
+        "it",
+        "iw",
+        "ja",
+        "kn",
+        "ko",
+        "lt",
+        "lv",
+        "ml",
+        "mo",
+        "mr",
+        "ms",
+        "nb",
+        "nl",
+        "no",
+        "pl",
+        "pt",
+        "ro",
+        "ru",
+        "sh",
+        "sk",
+        "sl",
+        "sr",
+        "sv",
+        "sw",
+        "ta",
+        "te",
+        "th",
+        "tl",
+        "tr",
+        "uk",
+        "ur",
+        "vi",
+        "zh"
+      ]
+    },
 // Based on the ICU63 version of
 // https://cs.chromium.org/chromium/src/third_party/icu/source/data/unit/reslocal.mk?rcl=797b7c
 // Includes the items from UNIT_ALIAS_SOURCE and UNIT_SOURCE
@@ -518,6 +586,7 @@
         "-/ExemplarCharactersPunctuation",
         "-/measurementSystemNames",
         "-/NumberElements/minimalPairs",
+        "-/personNames",
         "-/delimiters"
       ]
     },
@@ -632,6 +701,20 @@
         "+/Countries/US"
       ]
     },
+// Based on https://cs.chromium.org/chromium/src/third_party/icu/patches/data.build.patch?rcl=797b7c
+// +# Chromium : To save space, use '-R' option (exclude collation rules. just
+// +# include the compiled binary data.)
+// +GENRBOPTS=-k -R
+    {
+      "categories": [
+        "coll_tree"
+      ],
+      "rules": [
+        "-/UCARules",
+	"-/collations/*/Sequence"
+      ]
+    },
+// The following rules must be placed below "-/collations/*/Sequence" to avoid keeping empty unihan, big5han and gb2312han
 // Based on remove_legacy_chinese_codepoint_collation
 // # big5han and gb2312han collation do not make any sense and nobody uses them.
     {
@@ -647,19 +730,6 @@
         "-/*/unihan",
         "-/*/big5han",
         "-/*/gb2312han"
-      ]
-    },
-// Based on https://cs.chromium.org/chromium/src/third_party/icu/patches/data.build.patch?rcl=797b7c
-// +# Chromium : To save space, use '-R' option (exclude collation rules. just
-// +# include the compiled binary data.)
-// +GENRBOPTS=-k -R
-    {
-      "categories": [
-        "coll_tree"
-      ],
-      "rules": [
-        "-/UCARules",
-	"-/collations/*/Sequence"
       ]
     },
 // Based on filter_unit_data
@@ -1133,7 +1203,11 @@
         "+/calendar/default",
         "+/calendar/gregorian",
         "+/calendar/generic",
-        "+/calendar/buddhist"
+        "+/calendar/buddhist",
+        "-/calendar/default/DateTimeSkeletons",
+        "-/calendar/gregorian/DateTimeSkeletons",
+        "-/calendar/generic/DateTimeSkeletons",
+        "-/calendar/buddhist/DateTimeSkeletons"
       ]
     },
     {
@@ -1149,7 +1223,10 @@
         "-/calendar/*",
         "+/calendar/default",
         "+/calendar/gregorian",
-        "+/calendar/generic"
+        "+/calendar/generic",
+        "-/calendar/default/DateTimeSkeletons",
+        "-/calendar/gregorian/DateTimeSkeletons",
+        "-/calendar/generic/DateTimeSkeletons"
       ]
     },
 // Based on abridge_locale_data_for_non_ui_languages
@@ -1234,7 +1311,6 @@
           "my",
           "ne",
           "nn",
-          "no",
           "nso",
           "ny",
           "nyn",
@@ -1369,6 +1445,19 @@
         "+/timeData",
         "+/weekData",
         "+/weekData%variant"
+      ]
+    },
+    {
+      "categories": [
+        "translit"
+      ],
+      "rules": [
+        "-/*",
+        "+/RuleBasedTransliteratorIDs/Latin-ASCII",
+        "+/RuleBasedTransliteratorIDs/Katakana-Hiragana",
+        "+/RuleBasedTransliteratorIDs/Hiragana-Katakana",
+        "+/RuleBasedTransliteratorIDs/Hira-Kana",
+        "+/RuleBasedTransliteratorIDs/Kana-Hira"
       ]
     },
 // Remove all the Version

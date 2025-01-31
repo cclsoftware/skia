@@ -56,7 +56,7 @@ if(UNIX AND NOT APPLE)
 	set (skia_unicode_implementation icu)
 elseif (APPLE)
 	set (skia_flavors ${VENDOR_PLATFORM})
-	# TODO set (skia_unicode_implementation ...)
+	set (skia_unicode_implementation icu)
 endif ()
 
 option (SKIA_USE_SYSTEM_HARFBUZZ "Link Skia against system harfbuzz library" ON)
