@@ -95,6 +95,7 @@ if (VENDOR_CACHE_DIRECTORY)
 		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skia_file_name} DESTINATION "${outdir}")
 		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skshaper_file_name} DESTINATION "${outdir}")
 		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skunicode_file_name} DESTINATION "${outdir}")
+		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skunicode_implementation_file_name} DESTINATION "${outdir}")
 		ccl_restore_from_cache ("${cache_id}" FILE_NAME ${skparagraph_file_name} DESTINATION "${outdir}")
 
 		if (NOT "${teststring}" STREQUAL "")
