@@ -117,6 +117,8 @@ if(UNIX AND NOT APPLE)
 	set (SKIA_WARNING_FLAGS "\\\"-Wno-array-parameter\\\"")
 	if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16.0.0)
 		string (APPEND SKIA_WARNING_FLAGS ", \\\"-Wno-unsafe-buffer-usage\\\", \\\"-Wno-cast-function-type-strict\\\"")
+	elseif (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15.0.0 AND CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+		set (SKIA_DISABLE_ARMV8_CRC32 "-DCRC32_ARMV8_CRC32=0")
 	endif ()
 	set (SKIA_SYSTEM_HARFBUZZ "skia_use_system_harfbuzz=true")
 	find_library (HarfBuzz_subset_LIBRARY NAMES harfbuzz-subset)
@@ -146,7 +148,7 @@ if(UNIX AND NOT APPLE)
 	endif ()
 	
 	set (SKIA_ARGS_${VENDOR_TARGET_ARCHITECTURE}
-		"target_cpu=\\\"${VENDOR_TARGET_ARCHITECTURE}\\\" extra_cflags=[${SKIA_WARNING_FLAGS} ${SKIA_COMPILER_TARGET}] extra_cflags_cc=[${SKIA_WARNING_FLAGS}] ${SKIA_SYSTEM_HARFBUZZ} ${SKIA_SYSTEM_FREETYPE_INCLUDES} ${SKIA_SYSTEM_HARFBUZZ_INCLUDES} ${SKIA_GRAPHICS_IMPLEMENTATION} skia_use_system_freetype2=true skia_use_system_libjpeg_turbo=true skia_use_system_libpng=true skia_use_system_icu=true"
+		"target_cpu=\\\"${VENDOR_TARGET_ARCHITECTURE}\\\" extra_cflags=[${SKIA_WARNING_FLAGS} ${SKIA_COMPILER_TARGET} ${SKIA_DISABLE_ARMV8_CRC32}] extra_cflags_cc=[${SKIA_WARNING_FLAGS}] ${SKIA_SYSTEM_HARFBUZZ} ${SKIA_SYSTEM_FREETYPE_INCLUDES} ${SKIA_SYSTEM_HARFBUZZ_INCLUDES} ${SKIA_GRAPHICS_IMPLEMENTATION} skia_use_system_freetype2=true skia_use_system_libjpeg_turbo=true skia_use_system_libpng=true skia_use_system_icu=true"
 	)
 	
 	foreach (flavor ${skia_flavors})
