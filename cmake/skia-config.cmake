@@ -314,6 +314,7 @@ if (NOT TARGET build_skia)
 		else ()
 			target_compile_definitions (skia_${flavor} INTERFACE SK_RELEASE=1)
 		endif ()
+		target_compile_definitions (skia_${flavor} INTERFACE GPU_TEST_UTILS=1)
 
 		list (APPEND SKIA_LIBRARIES skia_${flavor} skshaper_${flavor} skunicode_${flavor} skunicode_implementation_${flavor} skparagraph_${flavor})
 	endforeach ()
