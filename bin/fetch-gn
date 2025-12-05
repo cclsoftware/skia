@@ -25,7 +25,10 @@ with open(gnzip, 'wb') as f:
   rev = 'b2afae122eeb6ce09c52d63f67dc53fc517dbdc8'
   url = 'https://chrome-infra-packages.appspot.com/dl/gn/gn/{}-{}/+/git_revision:{}'.format(
           OS,cpu,rev)
-  f.write(urlopen(url).read())
+  try:
+    f.write(urlopen(url).read())
+  except Exception:
+    sys.exit()
 
 gn_filename = 'gn.exe' if 'win32' in sys.platform else 'gn'
 with zipfile.ZipFile(gnzip, 'r') as f:
