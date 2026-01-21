@@ -160,7 +160,13 @@ if(UNIX AND NOT APPLE)
 		message (WARNING "Building Skia using the internal version of HarfBuzz")
 	endif ()
 	if (CMAKE_C_COMPILER_TARGET)
-		set (SKIA_COMPILER_TARGET ", \\\"--target=${CMAKE_C_COMPILER_TARGET}\\\", \\\"--sysroot=${CMAKE_SYSROOT}\\\", \\\"-I${CMAKE_SYSROOT}/usr/include\\\", \\\"-I${CMAKE_SYSROOT}/usr/include/freetype2\\\", \\\"-I${CMAKE_SYSROOT}/usr/include/harfbuzz\\\", \\\"-I${CMAKE_SYSROOT}/usr/aarch64-linux-gnu/include\\\"")
+		set (SKIA_COMPILER_TARGET ", \\\"--target=${CMAKE_C_COMPILER_TARGET}\\\", \\\"--sysroot=${CMAKE_SYSROOT}\\\", \\\"-I${CMAKE_SYSROOT}/usr/include\\\", \\\"-I${CMAKE_SYSROOT}/usr/aarch64-linux-gnu/include\\\"")
+		if (SKIA_USE_SYSTEM_FREETYPE)
+			string (APPEND SKIA_COMPILER_TARGET ", \\\"-I${CMAKE_SYSROOT}/usr/include/freetype2\\\"")
+		endif ()
+		if (SKIA_USE_SYSTEM_HARFBUZZ)
+			string (APPEND SKIA_COMPILER_TARGET ", \\\"-I${CMAKE_SYSROOT}/usr/include/harfbuzz\\\"")
+		endif ()
 		set (SKIA_SYSTEM_FREETYPE_INCLUDES "skia_use_system_freetype_includes=false")
 		set (SKIA_SYSTEM_HARFBUZZ_INCLUDES "skia_use_system_harfbuzz_includes=false")
 	endif ()
@@ -178,7 +184,7 @@ if(UNIX AND NOT APPLE)
 	endif ()
 	
 	set (SKIA_ARGS_${VENDOR_TARGET_ARCHITECTURE}
-		"target_cpu=\\\"${VENDOR_TARGET_ARCHITECTURE}\\\" extra_cflags=[${SKIA_WARNING_FLAGS} ${SKIA_COMPILER_TARGET} ${SKIA_DISABLE_ARMV8_CRC32}] extra_cflags_cc=[${SKIA_WARNING_FLAGS}] ${SKIA_SYSTEM_HARFBUZZ} ${SKIA_SYSTEM_FREETYPE} ${SKIA_SYSTEM_JPEG} ${SKIA_SYSTEM_PNG} ${SKIA_SYSTEM_ICU} ${SKIA_SYSTEM_FREETYPE_INCLUDES} ${SKIA_SYSTEM_HARFBUZZ_INCLUDES} ${SKIA_GRAPHICS_IMPLEMENTATION}"
+		"target_cpu=\\\"${VENDOR_TARGET_ARCHITECTURE}\\\" extra_cflags=[${SKIA_WARNING_FLAGS} ${SKIA_COMPILER_TARGET} ${SKIA_DISABLE_ARMV8_CRC32}] extra_cflags_cc=[${SKIA_WARNING_FLAGS}] extra_asmflags=[${SKIA_WARNING_FLAGS} ${SKIA_COMPILER_TARGET}] ${SKIA_SYSTEM_HARFBUZZ} ${SKIA_SYSTEM_FREETYPE} ${SKIA_SYSTEM_JPEG} ${SKIA_SYSTEM_PNG} ${SKIA_SYSTEM_ICU} ${SKIA_SYSTEM_FREETYPE_INCLUDES} ${SKIA_SYSTEM_HARFBUZZ_INCLUDES} ${SKIA_GRAPHICS_IMPLEMENTATION}"
 	)
 	
 	foreach (flavor ${skia_flavors})
