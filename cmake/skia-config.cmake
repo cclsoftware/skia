@@ -213,14 +213,14 @@ elseif(APPLE)
 		if [ \$PLATFORM_FAMILY_NAME = \"iOS\" ] ; then
 			if [ \$PLATFORM_NAME = \"iphonesimulator\" ] ; then
 				ARGS=\"${SKIA_ARGS} target_os=\\\"ios\\\" ios_use_simulator=true\"
-				EXTRA_CFLAGS=\"${SKIA_WARNING_FLAGS}, \\\"-DSK_USE_CG_ENCODER\\\", \\\"-miphoneos-version-min=\${IPHONEOS_DEPLOYMENT_TARGET}\\\", \\\"--target=\${NATIVE_ARCH_ACTUAL}-apple-ios-simulator\\\"\"
+				EXTRA_FLAGS=\"${SKIA_WARNING_FLAGS}, \\\"-DSK_USE_CG_ENCODER\\\", \\\"-miphoneos-version-min=\${IPHONEOS_DEPLOYMENT_TARGET}\\\", \\\"--target=\${NATIVE_ARCH_ACTUAL}-apple-ios-simulator\\\"\"
 			else
 				ARGS=\"${SKIA_ARGS} target_os=\\\"ios\\\"\"
-				EXTRA_CFLAGS=\"${SKIA_WARNING_FLAGS}, \\\"-DSK_USE_CG_ENCODER\\\", \\\"-miphoneos-version-min=\${IPHONEOS_DEPLOYMENT_TARGET}\\\"\"
+				EXTRA_FLAGS=\"${SKIA_WARNING_FLAGS}, \\\"-DSK_USE_CG_ENCODER\\\", \\\"-miphoneos-version-min=\${IPHONEOS_DEPLOYMENT_TARGET}\\\"\"
 			fi
 		else
 			ARGS=\"${SKIA_ARGS}\"
-			EXTRA_CFLAGS=\"${SKIA_WARNING_FLAGS}, \\\"-DSK_USE_CG_ENCODER\\\", \\\"-mmacosx-version-min=\${MACOSX_DEPLOYMENT_TARGET}\\\"\"
+			EXTRA_FLAGS=\"${SKIA_WARNING_FLAGS}, \\\"-DSK_USE_CG_ENCODER\\\", \\\"-mmacosx-version-min=\${MACOSX_DEPLOYMENT_TARGET}\\\"\"
 		fi
 
 		echo \"Building for architectures: \${ARCHS}\"
@@ -230,7 +230,7 @@ elseif(APPLE)
 			fi
 			echo \"Building \${ARCH}\"
 			NINJA_BUILD_DIR=./out/cmake_\${PLATFORM_NAME}_${buildtype}_\${ARCH}
-			THEARGS=\"--args=\${ARGS} target_cpu=\\\"\${ARCH}\\\" extra_cflags=[\${EXTRA_CFLAGS}, \\\"-arch\\\", \\\"\$ARCH\\\"] extra_asmflags=[\\\"-arch\\\", \\\"\$ARCH\\\"]\"
+			THEARGS=\"--args=\${ARGS} target_cpu=\\\"\${ARCH}\\\" extra_cflags=[\${EXTRA_FLAGS}, \\\"-arch\\\", \\\"\$ARCH\\\"] extra_asmflags=[\${EXTRA_FLAGS}, \\\"-arch\\\", \\\"\$ARCH\\\"]\"
 			echo \${THEARGS} | xargs -0 -t \"${SKIA_GN}\" gen \${NINJA_BUILD_DIR}
 			${NINJA} -C \${NINJA_BUILD_DIR}
 		done
