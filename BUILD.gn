@@ -1882,9 +1882,9 @@ group("modules") {
     "modules/svg",
   ]
 
-  if (is_wasm) {
-    deps += [ "modules/canvaskit" ]
-  }
+  #if (is_wasm) {
+  #  deps += [ "modules/canvaskit" ]
+  #}
 }
 
 config("use_skia_vulkan_headers") {
