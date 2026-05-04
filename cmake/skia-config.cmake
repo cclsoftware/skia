@@ -40,8 +40,7 @@ endif ()
 
 set (SKIA_SHARED_ARGS "cc=\\\"${CMAKE_C_COMPILER}\\\" cxx=\\\"${CMAKE_CXX_COMPILER}\\\" cc_wrapper=\\\"${CCACHE_WRAPPER_PATH}\\\" ${SKIA_IS_DEBUG} is_official_build=false is_trivial_abi=false skia_use_expat=false skia_use_harfbuzz=true skia_use_libwebp_decode=false skia_use_libwebp_encode=false skia_use_libheif=false skia_use_icu=true skia_use_piex=false skia_use_zlib=true skia_use_xps=false skia_enable_spirv_validation=false skia_enable_tools=false skia_enable_skottie=false skia_enable_skshaper=true skia_pdf_subset_harfbuzz=true skia_use_libjpeg_turbo_encode=true skia_use_libpng_encode=true skia_use_libjpeg_turbo_decode=true skia_use_libpng_decode=true skia_use_wuffs=true")
 
-set (filecontent
-	"#!${SHELL}")
+set (filecontent "")
 set (SKIA_GN "${skia_SOURCE_DIR}/bin/gn")
 set (SKIA_PRE_GN "")
 set (SKIA_POST_GN "")
@@ -220,7 +219,7 @@ if(UNIX AND NOT APPLE)
 			export ARGS=\"--args=${SKIA_SHARED_ARGS} ${SKIA_ARGS_${flavor}}\"
 			echo \${ARGS} | xargs -0 -t \"${SKIA_GN}\" gen \${BUILD_DIR}
 			${SKIA_POST_GN}
-			${NINJA} -C \${BUILD_DIR}
+			\"${NINJA}\" -C \${BUILD_DIR}
 		")
 	endforeach ()
 
@@ -309,7 +308,7 @@ if (NOT TARGET build_skia)
 	)
 
 	add_custom_command (OUTPUT ${skia_outputs}
-		COMMAND ${CMAKE_CURRENT_BINARY_DIR}/build_skia.sh
+		COMMAND "${SHELL}" -c "${CMAKE_CURRENT_BINARY_DIR}/build_skia.sh"
 		WORKING_DIRECTORY "${skia_SOURCE_DIR}"
 		BYPRODUCTS ${skia_byproducts}
 		VERBATIM USES_TERMINAL

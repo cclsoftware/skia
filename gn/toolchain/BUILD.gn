@@ -454,9 +454,9 @@ if (is_wasm) {
     cpu = "wasm"
     os = "wasm"
     if (host_os == "win") {
-      ar = "$skia_emsdk_dir/upstream/emscripten/emar.bat"
-      cc = "$skia_emsdk_dir/upstream/emscripten/emcc.bat"
-      cxx = "$skia_emsdk_dir/upstream/emscripten/em++.bat"
+      ar = "python -E $skia_emsdk_dir/upstream/emscripten/emar.py"
+      cc = "python -E $skia_emsdk_dir/upstream/emscripten/emcc.py"
+      cxx = "python -E $skia_emsdk_dir/upstream/emscripten/em++.py"
     } else {
       ar = "$skia_emsdk_dir/upstream/emscripten/emar"
       cc = "$skia_emsdk_dir/upstream/emscripten/emcc"
