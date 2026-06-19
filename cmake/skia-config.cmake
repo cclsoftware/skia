@@ -189,7 +189,7 @@ if(UNIX AND NOT APPLE)
 
 	if (VENDOR_TARGET_ARCHITECTURE STREQUAL "wasm")
 		find_path (emsdk_dir NAMES "emsdk_env.sh" HINTS "${EMSCRIPTEN_ROOT_PATH}/../../")
-		set (SKIA_PLATFORM_ARGS_${VENDOR_TARGET_ARCHITECTURE} "skia_emsdk_dir=\\\"${emsdk_dir}\\\" skia_use_fontconfig=false skia_enable_fontmgr_custom_embedded=true skia_enable_fontmgr_custom_empty=true skia_enable_fontmgr_custom_directory=true skia_enable_canvaskit=false")
+		set (SKIA_PLATFORM_ARGS_${VENDOR_TARGET_ARCHITECTURE} "skia_emsdk_dir=\\\"${emsdk_dir}\\\" skia_use_fontconfig=false skia_enable_fontmgr_custom_embedded=true skia_enable_fontmgr_custom_empty=true skia_enable_fontmgr_custom_directory=true skia_enable_canvaskit=false skia_enable_pdf=true")
 		set (SKIA_PLATFORM_FLAGS_${VENDOR_TARGET_ARCHITECTURE} ", \\\"-Wno-lifetime-safety-suggestions\\\"")
 		set (emscripten_flags "${VENDOR_EMSCRIPTEN_FLAGS}")
 		separate_arguments (emscripten_flags)
