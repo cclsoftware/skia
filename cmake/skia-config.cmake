@@ -333,35 +333,35 @@ if (NOT TARGET build_skia)
 
 	foreach (flavor ${skia_flavors})
 
-		add_library (skia_${flavor} SHARED IMPORTED GLOBAL)
+		add_library (skia_${flavor} STATIC IMPORTED GLOBAL)
 		add_dependencies (skia_${flavor} build_skia)
 		set_target_properties (skia_${flavor} PROPERTIES
 			IMPORTED_LOCATION "${skia_output_${flavor}}"
 			INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
 		)
 
-		add_library (skshaper_${flavor} SHARED IMPORTED GLOBAL)
+		add_library (skshaper_${flavor} STATIC IMPORTED GLOBAL)
 		add_dependencies (skshaper_${flavor} build_skia)
 		set_target_properties (skshaper_${flavor} PROPERTIES
 			IMPORTED_LOCATION "${skshaper_output_${flavor}}"
 			INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
 		)
 
-		add_library (skunicode_${flavor} SHARED IMPORTED GLOBAL)
+		add_library (skunicode_${flavor} STATIC IMPORTED GLOBAL)
 		add_dependencies (skunicode_${flavor} build_skia)
 		set_target_properties (skunicode_${flavor} PROPERTIES
 			IMPORTED_LOCATION "${skunicode_output_${flavor}}"
 			INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
 		)
 
-		add_library (skunicode_implementation_${flavor} SHARED IMPORTED GLOBAL)
+		add_library (skunicode_implementation_${flavor} STATIC IMPORTED GLOBAL)
 		add_dependencies (skunicode_implementation_${flavor} build_skia)
 		set_target_properties (skunicode_implementation_${flavor} PROPERTIES
 			IMPORTED_LOCATION "${skunicode_implementation_output_${flavor}}"
 			INTERFACE_INCLUDE_DIRECTORIES "${skia_SOURCE_DIR}"
 		)
 
-		add_library (skparagraph_${flavor} SHARED IMPORTED GLOBAL)
+		add_library (skparagraph_${flavor} STATIC IMPORTED GLOBAL)
 		add_dependencies (skparagraph_${flavor} build_skia)
 		set_target_properties (skparagraph_${flavor} PROPERTIES
 			IMPORTED_LOCATION "${skparagraph_output_${flavor}}"
