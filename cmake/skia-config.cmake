@@ -17,7 +17,7 @@
 set (SKIA_REVISION 2)
 
 ccl_find_path (skia_SOURCE_DIR NAMES "BUILD.gn" HINTS "${CMAKE_CURRENT_LIST_DIR}/.." DOC "Skia directory")
-ccl_find_program (NINJA NAMES "ninja" HINTS "${CCL_TOOLS_BINDIR}/${VENDOR_HOST_PLATFORM}/depot_tools" PATH_SUFFIXES "${CMAKE_HOST_SYSTEM_PROCESSOR}" DOC "Ninja executable")
+ccl_find_ninja (REQUIRED)
 
 find_package (Python3 REQUIRED COMPONENTS Interpreter)
 find_program (SHELL sh REQUIRED)
